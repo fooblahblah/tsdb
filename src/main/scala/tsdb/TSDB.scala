@@ -35,7 +35,7 @@ class TSDB(val fileName: String) {
 
   def combine(key: String, old: List[Entry], update: List[Entry]) = old ++ update
 
-  def atCapacity(entries: List[Entry]) = entries.length >= 1000
+  def atCapacity(entries: List[Entry]) = entries.length >= 100
 
   /**
    * Write an entry to the given path storing an index (if the time is on the minute boundary).
