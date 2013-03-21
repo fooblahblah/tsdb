@@ -1,164 +1,194 @@
 package cache
 
-//import blueeyes.bkka.Stop
-//import blueeyes.bkka.ActorRefStop
-import akka.actor.{Actor, ActorRef, Props, Scheduler, PoisonPill, ActorKilledException, ActorSystem}
+import util.ActorRefStop
+import akka.actor._
+import akka.actor.Scheduler
 import akka.pattern.ask
+import java.lang.ref.WeakReference
+import java.util.concurrent.TimeUnit.{ MILLISECONDS, NANOSECONDS }
+import scala.collection.mutable.{ Map, HashMap }
+import java.util.concurrent.{TimeUnit, Executors, ExecutorService}
+import scala.concurrent.Await
 import akka.util.Timeout
-
-import util.ClockSystem._
-
-import scala.collection.JavaConversions._
-import scala.concurrent._
-import scala.concurrent.duration._
+import scala.concurrent.duration.Duration
 import scala.concurrent.ExecutionContext.Implicits.global
-import scalaz.Semigroup
+import scala.concurrent.Future
 
-abstract class Stage[K, V] {
-  private sealed trait StageIn
-  private case class PutAll(pairs: Iterable[(K, V)], semigroup: Semigroup[V]) extends StageIn
-  private object     FlushAll extends StageIn
-  private object     FlushAllBySchedule extends StageIn
-
-  def flush(k: K, v: V): Unit
+/**
+ * A stage is a particular kind of cache that is used for staging IO updates.
+ * Many kinds of IO updates can be combined (e.g. instead of writing a single
+ * log line to a file, you can collect ten lines and write them all at once).
+ * This has the capacity to greatly improve performance when IO is a limiting
+ * factor.
+ * <p>
+ * Built on a cache, stage supports standard eviction based on a time to live .
+ * <p>
+ * Stopping a stage evicts all entries from the stage. As part of shutdown, in
+ * order to avoid data loss, every stage should be stopped.
+ */
+trait Stage[K, V] extends Map[K, V] { // with FutureDeliveryStrategySequential
 
   def expirationPolicy: ExpirationPolicy
+  def coalesce: (K, V, V) => V
+  def evict: (K, V) => Unit
+  def scheduler: ExecutorService
 
-  def maximumCapacity: Int
+  private sealed trait Request
+  private sealed trait Response
 
-  private val actorSystem = ActorSystem("blueeyes-stage")
+  private case class  Add(k: K, v: V) extends Request
+  private case class  Get(k: K) extends Request
+  private case object GetAll extends Request
+  private case class  Evict(k: K) extends Request
+  private case class  Flush(timeout: Long) extends Request
+  private case class  Remove(k: K) extends Request
+  private case object Stop extends Request
 
-  private class Cache extends scala.collection.mutable.Map[K, ExpirableValue[V]] { self =>
-    private val impl = new javolution.util.FastMap[K, ExpirableValue[V]]
+  private case class  Got(v: Option[V]) extends Response
+  private case class  GotAll(list: List[(K, V)]) extends Response
+  private case class  Removed(v: Option[V]) extends Response
+  private case object Stopped extends Response
 
-    def get(key: K): Option[ExpirableValue[V]] = Option(impl.get(key))
+  private case class FlushJob(createTime: Long, key: K)
 
-    def iterator: Iterator[(K, ExpirableValue[V])] = impl.iterator
-
-    def += (kv: (K, ExpirableValue[V])): this.type = {
-      impl.remove(kv._1)
-      impl.put(kv._1, kv._2)
-
-      this
-    }
-
-    def -= (k: K): this.type = {
-      Option(impl.get(k)) foreach { v =>
-        flush(k, v.value)
-        impl.remove(k)
-      }
-
-      this
-    }
-
-    def removeEldestEntries(n: Int): this.type = {
-      keys.take(n).foreach { key =>
-        self -= key
-      }
-
-      this
-    }
-
-    override def size = impl.size
-
-    override def foreach[U](f: ((K, ExpirableValue[V])) => U): Unit = impl.foreach(f)
-  }
-
-  private class StageActor extends Actor {
-    import scala.math._
-    import java.util.concurrent.TimeUnit
-
-    private val cache           = new Cache
-    private var flushScheduled  = false
-    private val duration        = Duration(min(expirationPolicy.timeToIdleNanos.getOrElse(2000000000l), expirationPolicy.timeToLiveNanos.getOrElse(2000000000l)) / 2, TimeUnit.NANOSECONDS)
-
-    def receive = {
-      case PutAll(pairs, semigroup) =>
-        putToCache(pairs, semigroup)
-        removeEldestEntries
-        scheduleFlush
-
-      case FlushAllBySchedule =>
-        val currentTime = System.nanoTime()
-
-        val keysToRemove = cache.foldLeft[List[K]](Nil) {
-          case (keysToRemove, (key, value)) =>
-            if(expirationPolicy.isExpired(value, currentTime)) key :: keysToRemove
-            else keysToRemove
-        }
-
-        cache --= keysToRemove
-
-        flushScheduled = false
-
-        if (cache.size > 0) scheduleFlush
-
-      case FlushAll =>
-        val cacheSize = cache.size
-        cache --= cache.keys
-        sender ! cacheSize
-    }
-
-    private def scheduleFlush: Unit = if (!flushScheduled) {
-      actorSystem.scheduler.scheduleOnce(duration) {
-        actor ! FlushAllBySchedule
-      }
-
-      flushScheduled = true
-    }
-
-    private def putToCache(pairs:  Iterable[(K, V)], semigroup: Semigroup[V]) {
-      var putSize = 0
-      for ((key, value) <- pairs) {
-        putSize += 1
-        cache.put(key, cache.get(key).map(current => current.withValue(semigroup.append(current.value, value))).getOrElse(ExpirableValue(value)))
-      }
-    }
-
-    private def removeEldestEntries {
-      cache.removeEldestEntries(0.max(cache.size - maximumCapacity))
-    }
-  }
+  private val actorSystem = ActorSystem("livingsocialstage")
 
   private val actor: ActorRef = actorSystem.actorOf(Props(new StageActor))
 
-  def += (k: K, v: V)(implicit sg: Semigroup[V]) = put(k, v)
+  private implicit val timeout: Timeout = Timeout(Duration(10000, TimeUnit.MILLISECONDS))
 
-  def += (tuple: (K, V))(implicit sg: Semigroup[V]) = put(tuple._1, tuple._2)
+  def get(key: K): Option[V] = Await.result(actor ? Get(key), timeout.duration) match {
+    case Got(v) => v
+    case _ => None
+  }
 
-  def put(k: K, v: V)(implicit sg: Semigroup[V]) = actor ! PutAll((k, v) :: Nil, sg)
+  /**
+   * Asynchronously retrieves the value for the specified key.
+   */
+  // def getLater(key: K): Future[Option[V]] = (actor !! (Get(key), { case Got(v) => v }))
 
-  def putAll(pairs: Iterable[(K, V)])(implicit sg: Semigroup[V]) = actor ! PutAll(pairs, sg)
+  def iterator: Iterator[(K, V)] = Await.result(actor ? GetAll, timeout.duration) match {
+    case GotAll(all) => all.iterator
+    case _ => sys.error("Unable to GetAll")
+  }
 
-  def flushAll(implicit timeout: Timeout): Future[Int] = (actor ? FlushAll).mapTo[Int]
+  def += (kv: (K, V)) = {
+    actor ! Add(kv._1, kv._2)
+    this
+  }
 
-//  /** TODO: use an iteratee such that the state of the stage is not exposed. */
-  private var stopFuture: Future[Unit] = _
-  def stop(timeout: Timeout) = synchronized {
-    println("stopping stage")
-//    if (stopFuture == null) {
-//      stopFuture =
-      flushAll(timeout).map {_ =>
-        println("stopping actor")
-        actorSystem.stop(actor)
-        println("shutdown actorsystem")
-        actorSystem.shutdown
+  def -= (key: K) = {
+    actor ! Remove(key)
+    this
+  }
+
+  /**
+   * Starts the stage. This function is called automatically when the stage
+   * is created.
+   */
+  def start = {
+    val timeout = expirationPolicy.timeToLive(MILLISECONDS).getOrElse[Long](1000)
+    actorSystem.scheduler.schedule(Duration(timeout, MILLISECONDS), Duration(timeout, MILLISECONDS), actor, Flush(timeout))
+  }
+
+  /**
+   * Stops the stage and evicts all entries.
+   */
+  def stop = for {
+    _ <- actor ? Stop
+    _ <- ActorRefStop(actorSystem, timeout).stop(actor)
+    _ <- Future.successful(actorSystem.shutdown)
+  } yield ()
+
+
+  private def scheduleTimeToLive(expirable: Expirable[K, V]) {
+    expirable.policy.timeToLive(MILLISECONDS) match {
+      case None =>
+      case Some(timeToLive) => {
+        val ref = new WeakReference(expirable)
+        val runnable = new Runnable {
+          def run = {
+            handleExpiration(ref)
+          }
+        }
+        scheduler.submit(runnable)
       }
-//    }
-    stopFuture
+    }
+  }
+
+  private def handleExpiration(expirableRef: WeakReference[Expirable[K, V]]) {
+    Option(expirableRef.get).map { expirable =>
+      expirationPolicy.timeToLiveNanos match {
+        case Some(timeout) => {
+          if(isExpired(expirable, timeout)) {
+            actor ! Evict(expirable.key)
+          }
+        }
+        case _ =>
+      }
+    }
+  }
+
+  private def isExpired(expirable: Expirable[K, V], timeout: Long) = (System.nanoTime - expirable.creationTimeNanos) >= timeout
+
+  private class StageActor extends Actor{
+    val delegate = new HashMap[K,  Expirable[K, V]]()
+
+    def receive = {
+      case Get(k) => sender ! Got(delegate.get(k).map(_.value))
+
+      case Add(k, v2) => {
+        val expirable = delegate.get(k) match {
+          case None     => Expirable(k, v2, expirationPolicy)
+          case Some(v1) => Expirable(k, coalesce(k, v1.value, v2), expirationPolicy, v1.creationTimeNanos, NANOSECONDS)
+        }
+
+        delegate.update(k, expirable)
+        scheduleTimeToLive(expirable)
+      }
+
+      case Remove(k) => {
+        val v = delegate.get(k).map(_.value)
+        delegate -= k
+      }
+
+      case Evict(k) => delegate.get(k).map(_.value).map { v =>
+        delegate -= k
+        evict(k, v)
+      }
+
+      case Flush(timeout: Long) => delegate.values.foreach { v =>
+        if(isExpired(v, timeout)) self ! Evict(v.key)
+      }
+
+      case Stop => {
+        delegate.foreach { entry =>
+          evict(entry._1, entry._2.value)
+        }
+
+        delegate.clear
+
+        sender ! Stopped
+      }
+
+      case GetAll => sender ! GotAll(delegate.toList.map(t => (t._1, t._2.value)))
+
+      case _ => sys.error("received unknown message")
+    }
   }
 }
 
+
 object Stage {
-  def apply[K, V](policy: ExpirationPolicy, capacity: Int)(evict: (K, V) => Unit): Stage[K, V] = new Stage[K, V] {
-    def expirationPolicy = policy
+  def apply[K, V](expirationPolicy_ : ExpirationPolicy, coalesce_ : (K, V, V) => V, evict_ : (K, V) => Unit, poolSize: Int = 20) = new Stage[K, V] {
+    val expirationPolicy = expirationPolicy_
 
-    def maximumCapacity = capacity
+    val coalesce = coalesce_
 
-    def flush(k: K, v: V): Unit = evict(k, v)
+    val evict = evict_
+
+    val scheduler = Executors.newFixedThreadPool(poolSize)
+
+    start
   }
-
-//  implicit def stop[K, V](implicit timeout: Timeout): Stop[Stage[K, V]] = new Stop[Stage[K, V]] {
-//    def stop(s: Stage[K, V]) = s.stop(timeout)
-//  }
 }

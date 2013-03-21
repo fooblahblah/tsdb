@@ -12,25 +12,31 @@ import cache.Stage
 import java.util.concurrent.TimeUnit
 import scalaz._
 import Scalaz._
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
+import java.util.concurrent.ConcurrentHashMap
 
 class TSDB(val fileName: String) {
   private val writer    = HDF5Factory.open(fileName)
   private val compounds = writer.compounds()
   private val entryType = compounds.getInferredType(classOf[Entry])
 
-  private val expiration = ExpirationPolicy(Some(100), Some(0), TimeUnit.MILLISECONDS)
-  private val stage      = Stage[String, List[Entry]](expiration, 100000)(evict)
+  private val expiration = ExpirationPolicy(Some(1000), Some(100), TimeUnit.MILLISECONDS)
+  private val stage      = Stage[String, List[Entry]](expiration, combine, evict)
+
+  val metricOffsets = new ConcurrentHashMap[String, Long]()
 
   /**
    *  Callback to evict and flush via writer
    */
-  def evict(key: String, entries: List[Entry]) {
-    println(s"evicting ${entries.length} to $key")
-    val offset = 0
-    writer.writeCompoundArrayBlockWithOffset(key, entryType, entries.toArray, offset)
-    println("evict complete")
+  def evict(path: String, entries: List[Entry]) {
+    println(s"evicting $path/${entries.length}")
+    val offset = metricOffsets.get(path)
+    writer.writeCompoundArrayBlockWithOffset(path, entryType, entries.toArray, offset)
+    metricOffsets.replace(path, offset, offset + entries.length)
   }
 
+  def combine(key: String, old: List[Entry], update: List[Entry]) = old ++ update
 
   /**
    * Write an entry to the given path storing an index (if the time is on the minute boundary).
@@ -46,12 +52,17 @@ class TSDB(val fileName: String) {
     if(!writer.exists(path)) {
       compounds.createArray(path, entryType, TSDB.SECONDS_PER_DAY)
     }
+
+    metricOffsets.putIfAbsent(path, 0)
+
 //      writer.setDataSetSize(path, TSDB.SECONDS_PER_DAY * 2) // This is how you grow the array
   }
 
-  def stop {
-    stage.stop(Timeout(5, TimeUnit.SECONDS))
-    writer.close
+  def stop = {
+    for {
+      _ <- stage.stop
+      f <- Future.successful(writer.close)
+    } yield f
   }
 }
 
