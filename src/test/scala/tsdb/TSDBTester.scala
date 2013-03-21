@@ -10,7 +10,7 @@ object TSDBTester extends App {
   1 to 86400 foreach { i =>
     val t = startTime + (i * 1000)
     db.write("stats_counts/cupcake/web_traffic/impression", t, Math.random() * 100)
-    db.write("stats_counts/cupcake/web_traffic/conversion", t, Math.random() * 10)
+//    db.write("stats_counts/cupcake/web_traffic/conversion", t, Math.random() * 10)
   }
 
   println(s"elapsed: ${System.currentTimeMillis() - startTime}")

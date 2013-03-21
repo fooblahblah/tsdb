@@ -4,25 +4,23 @@ import akka.util.Timeout
 import ch.systemsx.cisd.hdf5._
 import scala.collection.JavaConversions._
 import scala.reflect._
-import org.joda.time._
-import java.util.concurrent.atomic.AtomicLong
-import scala.collection.mutable.ArrayBuffer
-import cache.ExpirationPolicy
+//import org.joda.time._
 import cache.Stage
 import java.util.concurrent.TimeUnit
 import scalaz._
 import Scalaz._
-import scala.concurrent.Future
+import scala.concurrent._
+import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext.Implicits.global
 import java.util.concurrent.ConcurrentHashMap
+import cache.SimpleStage
 
 class TSDB(val fileName: String) {
   private val writer    = HDF5Factory.open(fileName)
   private val compounds = writer.compounds()
   private val entryType = compounds.getInferredType(classOf[Entry])
 
-  private val expiration = ExpirationPolicy(Some(1000), Some(100), TimeUnit.MILLISECONDS)
-  private val stage      = Stage[String, List[Entry]](expiration, combine, evict)
+  private val stage      = SimpleStage[String, List[Entry]](Duration(250, TimeUnit.MILLISECONDS), atCapacity, evict)
 
   val metricOffsets = new ConcurrentHashMap[String, Long]()
 
@@ -30,13 +28,14 @@ class TSDB(val fileName: String) {
    *  Callback to evict and flush via writer
    */
   def evict(path: String, entries: List[Entry]) {
-    println(s"evicting $path/${entries.length}")
     val offset = metricOffsets.get(path)
     writer.writeCompoundArrayBlockWithOffset(path, entryType, entries.toArray, offset)
     metricOffsets.replace(path, offset, offset + entries.length)
   }
 
   def combine(key: String, old: List[Entry], update: List[Entry]) = old ++ update
+
+  def atCapacity(entries: List[Entry]) = entries.length >= 1000
 
   /**
    * Write an entry to the given path storing an index (if the time is on the minute boundary).
@@ -59,10 +58,10 @@ class TSDB(val fileName: String) {
   }
 
   def stop = {
-    for {
-      _ <- stage.stop
-      f <- Future.successful(writer.close)
-    } yield f
+//    for {
+//      _ <- stage.stop
+//      f <- Future.successful(writer.close)
+//    } yield f
   }
 }
 
