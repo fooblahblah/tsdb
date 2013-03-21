@@ -6,9 +6,12 @@ import java.util.concurrent.Executors
 import scala.concurrent.duration.Duration
 import java.util.concurrent.TimeUnit
 import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
+
+case class Expiring[V](created: Long, value: V)
 
 trait SimpleStage[K, V] {
-  private val cache = TMap[K, V]()
+  private val cache = TMap[K, Expiring[V]]()
 
   def atCapacity: (V) => Boolean
   def evict: (K, V) => Unit
@@ -16,29 +19,45 @@ trait SimpleStage[K, V] {
   def duration: Duration
 
   def put(k: K, v: V) = atomic { implicit tx =>
-    cache.put(k, cache.get(k).map { cur =>
-      semigroup.append(cur, v)
-    }.getOrElse(v)).map { update =>
-      if(atCapacity(update)) flush(k)//threadPool.schedule(flushHandler(k), duration.toUnit(TimeUnit.MILLISECONDS).toLong, TimeUnit.MILLISECONDS)
+    val ts = System.currentTimeMillis()
+
+    cache.put(k, Expiring(ts, cache.get(k).map { exp =>
+      semigroup.append(exp.value, v)
+    }.getOrElse(v))).map { update =>
+      if(atCapacity(update.value)) flush(k)
+      threadPool.schedule(flushHandler(k), duration.toUnit(TimeUnit.MILLISECONDS).toLong, TimeUnit.MILLISECONDS)
     }
   }
 
   private def flush(k: K) = atomic { implicit tx =>
-    cache.remove(k).foreach { v =>
-      evict(k, v)
+    cache.remove(k).foreach { exp =>
+      evict(k, exp.value)
     }
   }
 
   private def flushHandler(k: K) = new Runnable {
     def run {
-      flush(k)
+      atomic { implicit tx =>
+        cache.get(k).map { exp =>
+          if(System.currentTimeMillis() - exp.created >= duration.toUnit(TimeUnit.MILLISECONDS).toLong) {
+            println(s"flushHandler $k")
+            flush(k)
+          }
+        }
+      }
     }
   }
 
-  def stop = atomic { implicit tx =>
-//    Future(if(!m.isEmpty))
-//    threadPool.shutdown()
-    Future.successful(())
+  def stop: Future[Unit] = atomic { implicit tx =>
+    Future {
+      if(cache.isEmpty) {
+        println("shutting down threadpool")
+        threadPool.shutdown()
+      } else {
+        Thread.sleep(500)
+        stop map (f => f)
+      }
+    }
   }
 
   private val threadPool = Executors.newScheduledThreadPool(8)

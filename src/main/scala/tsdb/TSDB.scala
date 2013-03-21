@@ -28,6 +28,7 @@ class TSDB(val fileName: String) {
    *  Callback to evict and flush via writer
    */
   def evict(path: String, entries: List[Entry]) {
+    println(s"evict $path ${entries.length}")
     val offset = metricOffsets.get(path)
     writer.writeCompoundArrayBlockWithOffset(path, entryType, entries.toArray, offset)
     metricOffsets.replace(path, offset, offset + entries.length)
@@ -35,7 +36,7 @@ class TSDB(val fileName: String) {
 
   def combine(key: String, old: List[Entry], update: List[Entry]) = old ++ update
 
-  def atCapacity(entries: List[Entry]) = entries.length >= 100
+  def atCapacity(entries: List[Entry]) = entries.length >= 99
 
   /**
    * Write an entry to the given path storing an index (if the time is on the minute boundary).
@@ -58,10 +59,10 @@ class TSDB(val fileName: String) {
   }
 
   def stop = {
-//    for {
-//      _ <- stage.stop
-//      f <- Future.successful(writer.close)
-//    } yield f
+    for {
+      _ <- stage.stop
+      f <- Future.successful(writer.close)
+    } yield f
   }
 }
 
