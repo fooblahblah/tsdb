@@ -11,7 +11,7 @@ import scala.concurrent.ExecutionContext.Implicits.global
 case class Expiring[V](created: Long, value: V)
 
 trait SimpleStage[K, V] {
-  private val cache = TMap[K, Expiring[V]]()
+  private val cache = TMap.empty[K, Expiring[V]]
 
   def atCapacity: (V) => Boolean
   def evict: (K, V) => Unit
@@ -21,12 +21,14 @@ trait SimpleStage[K, V] {
   def put(k: K, v: V) = atomic { implicit tx =>
     val ts = System.currentTimeMillis()
 
-    cache.put(k, Expiring(ts, cache.get(k).map { exp =>
+    val update = Expiring(ts, cache.get(k).map { exp =>
       semigroup.append(exp.value, v)
-    }.getOrElse(v))).map { update =>
-      if(atCapacity(update.value)) flush(k)
-      threadPool.schedule(flushHandler(k), duration.toUnit(TimeUnit.MILLISECONDS).toLong, TimeUnit.MILLISECONDS)
-    }
+    }.getOrElse(v))
+
+    cache.put(k, update)
+
+    if(atCapacity(update.value)) flush(k)
+    threadPool.schedule(flushHandler(k), duration.toUnit(TimeUnit.MILLISECONDS).toLong, TimeUnit.MILLISECONDS)
   }
 
   private def flush(k: K) = atomic { implicit tx =>
@@ -37,12 +39,9 @@ trait SimpleStage[K, V] {
 
   private def flushHandler(k: K) = new Runnable {
     def run {
-      atomic { implicit tx =>
-        cache.get(k).map { exp =>
-          if(System.currentTimeMillis() - exp.created >= duration.toUnit(TimeUnit.MILLISECONDS).toLong) {
-            println(s"flushHandler $k")
-            flush(k)
-          }
+      cache.snapshot.get(k).map { exp =>
+        if(System.currentTimeMillis() - exp.created >= duration.toUnit(TimeUnit.MILLISECONDS).toLong) {
+          flush(k)
         }
       }
     }

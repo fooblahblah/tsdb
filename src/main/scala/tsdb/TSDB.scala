@@ -20,7 +20,7 @@ class TSDB(val fileName: String) {
   private val compounds = writer.compounds()
   private val entryType = compounds.getInferredType(classOf[Entry])
 
-  private val stage      = SimpleStage[String, List[Entry]](Duration(250, TimeUnit.MILLISECONDS), atCapacity, evict)
+  private val stage = SimpleStage[String, List[Entry]](Duration(250, TimeUnit.MILLISECONDS), atCapacity, evict)
 
   val metricOffsets = new ConcurrentHashMap[String, Long]()
 
@@ -28,8 +28,8 @@ class TSDB(val fileName: String) {
    *  Callback to evict and flush via writer
    */
   def evict(path: String, entries: List[Entry]) {
-    println(s"evict $path ${entries.length}")
     val offset = metricOffsets.get(path)
+    println(s"($offset) evict $path ${entries.length}")
     writer.writeCompoundArrayBlockWithOffset(path, entryType, entries.toArray, offset)
     metricOffsets.replace(path, offset, offset + entries.length)
   }
