@@ -1,22 +1,35 @@
 package tsdb
 
+import akka.util.Timeout
 import ch.systemsx.cisd.hdf5._
 import scala.collection.JavaConversions._
 import scala.reflect._
 import org.joda.time._
 import java.util.concurrent.atomic.AtomicLong
 import scala.collection.mutable.ArrayBuffer
-import net.sf.ehcache._
+import cache.ExpirationPolicy
+import cache.Stage
+import java.util.concurrent.TimeUnit
+import scalaz._
+import Scalaz._
 
 class TSDB(val fileName: String) {
   private val writer    = HDF5Factory.open(fileName)
   private val compounds = writer.compounds()
   private val entryType = compounds.getInferredType(classOf[Entry])
 
-  private val bufferSize = 1000
+  private val expiration = ExpirationPolicy(Some(100), Some(0), TimeUnit.MILLISECONDS)
+  private val stage      = Stage[String, List[Entry]](expiration, 100000)(evict)
 
-  val offset = new AtomicLong(-1)
-  val buffer = new ArrayBuffer[Entry](bufferSize)
+  /**
+   *  Callback to evict and flush via writer
+   */
+  def evict(key: String, entries: List[Entry]) {
+    println(s"evicting ${entries.length} to $key")
+    val offset = 0
+    writer.writeCompoundArrayBlockWithOffset(key, entryType, entries.toArray, offset)
+    println("evict complete")
+  }
 
 
   /**
@@ -25,27 +38,19 @@ class TSDB(val fileName: String) {
    */
   def write(path: String, timestamp: Long, value: Double) {
     initializePathAndOffset(path)
-
-    if(buffer.size < bufferSize) buffer.append(Entry(timestamp, value))
-    else {
-      // Append the array block from the buffer
-      writer.writeCompoundArrayBlockWithOffset(path, entryType, buffer.toArray, offset.getAndAdd(bufferSize))
-      buffer.clear
-    }
+    stage.put(path, List(Entry(timestamp, value)))
   }
+
 
   def initializePathAndOffset(path: String) {
     if(!writer.exists(path)) {
       compounds.createArray(path, entryType, TSDB.SECONDS_PER_DAY)
-      offset.set(0)
-    } else if(offset.get == -1) {
-      writer.setDataSetSize(path, TSDB.SECONDS_PER_DAY * 2)
-      offset.set(TSDB.SECONDS_PER_DAY)
-      println(writer.getDataSetInformation(path).getNumberOfElements())
     }
+//      writer.setDataSetSize(path, TSDB.SECONDS_PER_DAY * 2) // This is how you grow the array
   }
 
-  def close {
+  def stop {
+    stage.stop(Timeout(5, TimeUnit.SECONDS))
     writer.close
   }
 }

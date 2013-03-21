@@ -63,4 +63,6 @@ object TSDBTester extends App {
   println(s"elapsed: ${System.currentTimeMillis() - startTime}")
 
   println("done!")
+
+  db.stop
 }
