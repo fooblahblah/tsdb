@@ -1,34 +1,45 @@
 package tsdb
 
 import scala.concurrent.ExecutionContext.Implicits.global
-import org.joda.time.Minutes
+import java.util.Date
+import org.joda.time._
+import org.specs2.mutable.Specification
+import org.junit.runner._
+import org.specs2.runner._
 
-object TSDBTester extends App {
-  val db = new TSDB("/tmp/tsdb.h5")
+@RunWith(classOf[JUnitRunner])
+class TSDBSpec extends Specification {
+   val db        = new TSDB("/tmp/tsdb.h5")
+   val path      = "stats_counts/site/web_traffic/impression"
+   val startTime = System.currentTimeMillis()
 
-  val startTime = System.currentTimeMillis()
+  "TSDB" should {
+    step {
+      println("writing test data")
 
-  val path = "stats_counts/cupcake/web_traffic/impression"
+      0 until TSDB.SECONDS_PER_DAY foreach { i =>
+        val t = startTime + (i * 1000)
+        db.write(path, t, Math.random() * 100)
+      }
 
-  1 to TSDB.SECONDS_PER_DAY foreach { i =>
-    val t = startTime + (i * 1000)
-    db.write(path, t, Math.random() * 100)
-//    db.write("stats_counts/cupcake/web_traffic/conversion", t, Math.random() * 10)
-  }
+      println(s"write time: ${System.currentTimeMillis() - startTime}")
+    }
 
-  println(s"write time: ${System.currentTimeMillis() - startTime}")
+    "Read basic range" in {
+      val start = new DateTime(startTime)
 
-  val start = startTime + ((TSDB.SECONDS_PER_DAY / 2) * 1000)
+      val startTime2 = System.currentTimeMillis()
 
-  val startTime2 = System.currentTimeMillis()
+      val results = db.read(path, start.toDate.getTime, start.plusHours(1).toDate.getTime)
+      println(s"${results.length}, ${results.headOption.map(e => new Date(e.timestamp))}, ${results.lastOption.map(e => new Date(e.timestamp))}")
+      println(s"read time: ${System.currentTimeMillis() - startTime2}")
+      results.length == 3601
+    }
 
-  println(s"start = $start")
-  val results = db.read(path, start, start + (1000 * 60 * 60))
-  println(s"${results.length}, ${results.headOption}, ${results.lastOption}")
-
-  println(s"read time: ${System.currentTimeMillis() - startTime2}")
-
-  db.stop map { _ =>
-    println("done!")
+    step {
+      db.stop map { _ =>
+        println("done!")
+      }
+    }
   }
 }

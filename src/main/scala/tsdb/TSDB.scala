@@ -61,24 +61,38 @@ class TSDB(val fileName: String) {
 
 
   def read(path: String, start: Long, end: Long): List[Entry] = {
-    val numEntries = writer.getNumberOfElements(path) - 1
+    if(writer.exists(path)) {
+      val numEntries  = writer.getNumberOfElements(path) - 1
 
-    binarySearch(path, start, 0, numEntries).map { i =>
-      def readChunk(offset: Long) = {
-        val remaining = numEntries - offset - chunkSize
-        val chunk = if(remaining < 0) Math.abs(remaining).toInt else chunkSize
-        compounds.readArrayBlockWithOffset(path, entryType, chunk, offset)
-      }
+      // Ensure the start is after the actual start, otherwise just use actual start
+      compounds.readArrayBlockWithOffset(path, entryType, 1, 0).headOption.map(_.timestamp).map(actual => if(actual < start) start else actual).map { start =>
 
-      def generateRange(l: List[Entry]): List[Entry] = l match {
-        case Nil                           => l
-        case _ if(l.last.timestamp) > end  => l.reverse.dropWhile(_.timestamp > end).reverse
-        case _                             => generateRange(l ++ readChunk(l.length))
-      }
+        binarySearch(path, start, 0, numEntries).map { i =>
+          def readChunk(offset: Long) = {
+            if(offset < numEntries) {
+              val remaining = numEntries - offset - chunkSize + 1
+              val chunk = if(remaining < 0) Math.abs(remaining).toInt else chunkSize
+              compounds.readArrayBlockWithOffset(path, entryType, chunk, offset).toList
+            } else {
+              Nil
+            }
+          }
 
-      generateRange(readChunk(i).toList)
+          def generateRange(l: List[Entry]): List[Entry] = l match {
+            case Nil                           => Nil
+            case _ if(l.last.timestamp) > end  => l.reverse.dropWhile(_.timestamp > end).reverse
+            case _                             =>
+              readChunk(l.length) match {
+                case Nil => l
+                case xs  => generateRange(l ++ xs)
+              }
+          }
 
-    }.getOrElse(Nil)
+          generateRange(readChunk(i))
+
+        }.getOrElse(Nil)
+      }.getOrElse(Nil)
+    } else Nil
   }
 
 
@@ -108,7 +122,11 @@ class TSDB(val fileName: String) {
 }
 
 object TSDB {
-  val SECONDS_PER_DAY = 86400
+  val MILLIS_PER_SECOND = 1000
+  val MILLIS_PER_MINUTE = MILLIS_PER_SECOND * 60
+  val MILLIS_PER_HOUR   = MILLIS_PER_MINUTE * 60
+  val MILLIS_PER_DAY    = SECONDS_PER_DAY * 1000
+  val SECONDS_PER_DAY   = 86400
 
   def apply(fileName: String) = new TSDB(fileName)
 }
