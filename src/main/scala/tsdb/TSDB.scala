@@ -4,7 +4,6 @@ import akka.util.Timeout
 import ch.systemsx.cisd.hdf5._
 import scala.collection.JavaConversions._
 import scala.reflect._
-//import org.joda.time._
 import cache.Stage
 import java.util.concurrent.TimeUnit
 import scalaz._
@@ -14,6 +13,7 @@ import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext.Implicits.global
 import java.util.concurrent.ConcurrentHashMap
 import cache.SimpleStage
+import ch.systemsx.cisd.hdf5.IHDF5WriterConfigurator.SyncMode
 
 class TSDB(val fileName: String) {
   private val writer    = HDF5Factory.open(fileName)
@@ -22,21 +22,31 @@ class TSDB(val fileName: String) {
 
   private val stage = SimpleStage[String, List[Entry]](Duration(250, TimeUnit.MILLISECONDS), atCapacity, evict)
 
-  val metricOffsets = new ConcurrentHashMap[String, Long]()
+  private val metricOffsets = new ConcurrentHashMap[String, Long]()
 
   /**
    *  Callback to evict and flush via writer
    */
-  def evict(path: String, entries: List[Entry]) {
+  private def evict(path: String, entries: List[Entry]) {
     val offset = metricOffsets.get(path)
-    println(s"($offset) evict $path ${entries.length}")
+//    println(s"($offset) evict $path ${entries.length}")
     writer.writeCompoundArrayBlockWithOffset(path, entryType, entries.toArray, offset)
     metricOffsets.replace(path, offset, offset + entries.length)
   }
 
-  def combine(key: String, old: List[Entry], update: List[Entry]) = old ++ update
+  // Determines whether it's time to flush based on capacity
+  private def atCapacity(entries: List[Entry]) = entries.length >= 128
 
-  def atCapacity(entries: List[Entry]) = entries.length >= 99
+  private def initializePathAndOffset(path: String) {
+    if(!writer.exists(path)) {
+      compounds.createArray(path, entryType, TSDB.SECONDS_PER_DAY)
+    }
+
+    metricOffsets.putIfAbsent(path, 0)
+
+//      writer.setDataSetSize(path, TSDB.SECONDS_PER_DAY * 2) // This is how you grow the array
+  }
+
 
   /**
    * Write an entry to the given path storing an index (if the time is on the minute boundary).
@@ -48,15 +58,32 @@ class TSDB(val fileName: String) {
   }
 
 
-  def initializePathAndOffset(path: String) {
-    if(!writer.exists(path)) {
-      compounds.createArray(path, entryType, TSDB.SECONDS_PER_DAY)
+  def read(path: String, start: Long, end: Long): List[Entry] = {
+    val numEntries = writer.getNumberOfElements(path) - 1
+
+    binarySearch(path, start, 0, numEntries).map { i =>
+      compounds.readArrayBlock(path, entryType, 1, i).toList
+    }.getOrElse(Nil)
+  }
+
+
+  private def binarySearch(path: String, v: Long, low: Long, high: Long) = {
+    println(s"$v, $low, $high")
+    def recurse(low: Long, high: Long): Option[Long] = (low + high) / 2 match {
+      case _ if high < low => None
+      case mid if readBlock(path, mid).timestamp > v => recurse(low, mid - 1)
+      case mid if readBlock(path, mid).timestamp < v => recurse(mid + 1, high)
+      case mid => Some(mid)
     }
 
-    metricOffsets.putIfAbsent(path, 0)
-
-//      writer.setDataSetSize(path, TSDB.SECONDS_PER_DAY * 2) // This is how you grow the array
+    recurse(0, high)
   }
+
+
+  private def readBlock(path: String, offset: Long): Entry = {
+    compounds.readArrayBlock(path, entryType, 1, offset).head
+  }
+
 
   def stop = {
     for {
