@@ -22,7 +22,9 @@ object TSDBTester extends App {
 
   val startTime2 = System.currentTimeMillis()
 
-  println(db.read(path, start, start + (1000 * 60 * 10)))
+  println(s"start = $start")
+  val results = db.read(path, start, start + (1000 * 60 * 60))
+  println(s"${results.length}, ${results.headOption}, ${results.lastOption}")
 
   println(s"read time: ${System.currentTimeMillis() - startTime2}")
 

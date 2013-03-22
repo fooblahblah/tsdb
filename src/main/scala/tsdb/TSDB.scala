@@ -24,6 +24,8 @@ class TSDB(val fileName: String) {
 
   private val metricOffsets = new ConcurrentHashMap[String, Long]()
 
+  private val chunkSize = 4096
+
   /**
    *  Callback to evict and flush via writer
    */
@@ -62,13 +64,25 @@ class TSDB(val fileName: String) {
     val numEntries = writer.getNumberOfElements(path) - 1
 
     binarySearch(path, start, 0, numEntries).map { i =>
-      compounds.readArrayBlock(path, entryType, 1, i).toList
+      def readChunk(offset: Long) = {
+        val remaining = numEntries - offset - chunkSize
+        val chunk = if(remaining < 0) Math.abs(remaining).toInt else chunkSize
+        compounds.readArrayBlockWithOffset(path, entryType, chunk, offset)
+      }
+
+      def generateRange(l: List[Entry]): List[Entry] = l match {
+        case Nil                           => l
+        case _ if(l.last.timestamp) > end  => l.reverse.dropWhile(_.timestamp > end).reverse
+        case _                             => generateRange(l ++ readChunk(l.length))
+      }
+
+      generateRange(readChunk(i).toList)
+
     }.getOrElse(Nil)
   }
 
 
-  private def binarySearch(path: String, v: Long, low: Long, high: Long) = {
-    println(s"$v, $low, $high")
+  private def binarySearch(path: String, v: Long, low: Long, high: Long): Option[Long] = {
     def recurse(low: Long, high: Long): Option[Long] = (low + high) / 2 match {
       case _ if high < low => None
       case mid if readBlock(path, mid).timestamp > v => recurse(low, mid - 1)
@@ -81,7 +95,7 @@ class TSDB(val fileName: String) {
 
 
   private def readBlock(path: String, offset: Long): Entry = {
-    compounds.readArrayBlock(path, entryType, 1, offset).head
+    compounds.readArrayBlockWithOffset(path, entryType, 1, offset).head
   }
 
 
