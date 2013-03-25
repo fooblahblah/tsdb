@@ -42,7 +42,6 @@ class TSDB(val fileName: String) {
 
 //    @tailrec
     def readSegment(start: Long, remaining: Int): List[Entry] = {
-      println(s"readSegment $start")
       val offset    =  new DateTime(start).secondOfDay().get
       val startPath = s"$path/${new DateTime(start).withMillisOfDay(0).getMillis}"
 
@@ -76,7 +75,7 @@ class TSDB(val fileName: String) {
       val subPath = s"$path/${kv._1}"
       if(!writer.exists(subPath)) {
         compounds.createArray(subPath, entryType, SECONDS_PER_DAY)
-        compounds.writeArrayBlockWithOffset(subPath, entryType, (1 to SECONDS_PER_DAY).map(_ => Entry(-1, 0)).toArray, 0)
+//        compounds.writeArrayBlockWithOffset(subPath, entryType, (1 to SECONDS_PER_DAY).map(_ => Entry(-1, 0)).toArray, 0)
       }
 
       def writeEntries(entries: List[Entry]) {
@@ -88,6 +87,7 @@ class TSDB(val fileName: String) {
 
       @tailrec
       def writeSegment(entries: List[Entry]) {
+//        println(s"writeSegment $entries")
         entries.zip(entries.drop(1)).indexWhere(pair => pair._2.timestamp - pair._1.timestamp > TSDB.MILLIS_PER_SECOND) match {
           case i if(i == -1) => writeEntries(entries)
 
@@ -98,9 +98,15 @@ class TSDB(val fileName: String) {
         }
       }
 
-      writeSegment(kv._2)
-      writer.flush()
+//      writeSegment(kv._2)
+
+      kv._2.foreach { e =>
+        val offset = new DateTime(e.timestamp).secondOfDay().get
+        writer.writeCompoundArrayBlockWithOffset(subPath, entryType, Array(e), offset)
+      }
     }
+
+    writer.flush()
   }
 
 

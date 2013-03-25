@@ -39,7 +39,7 @@ class TSDBSpec extends Specification {
     "read first 5 data points" in {
       db.write(path, start, Math.random() * 100)
       db.write(path, start.plusSeconds(1), Math.random() * 100)
-//      db.write(path, start.plusSeconds(2), Math.random() * 100)
+      db.write(path, start.plusSeconds(2), Math.random() * 100)
       db.write(path, start.plusSeconds(3), Math.random() * 100)
       db.write(path, start.plusSeconds(4), Math.random() * 100)
 
@@ -47,16 +47,16 @@ class TSDBSpec extends Specification {
     }
 
     "read gappy data" in {
-      db.write(path, start.plusSeconds(10).getMillis, Math.random() * 100)
-
-      println(db.read(path, start, start.plusSeconds(10)))
-
-      db.read(path, start, start.plusSeconds(10)).length must eventually(5, new Duration(500))(be_==(5))
+      val v = Math.random() * 100
+      db.write(path, start.plusSeconds(10).getMillis, v)
+      db.read(path, start, start.plusSeconds(10)).lastOption.map(_.value) must eventually(5, new Duration(500))(beSome(v))
     }
 
-//    "read ranges outside bounds" in {
+    "read ranges outside bounds" in {
 //      db.read(path, start.minusHours(1), start.plusHours(1)).length must eventually(5, new Duration(500))(be_==(3601))
-//    }
+      println(db.read(path, start, start.plusMinutes(10)))
+      db.read(path, start, start.plusHours(1)).length must eventually(5, new Duration(500))(be_==(3601))
+    }
 
     step {
       db.stop map { _ =>
