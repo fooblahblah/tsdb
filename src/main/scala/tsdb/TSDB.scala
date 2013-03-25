@@ -50,7 +50,7 @@ class TSDB(val fileName: String) {
           binarySearch(path, start, 0, lastOffset).map { i =>
             def readChunk(offset: Long) = {
               if(offset < lastOffset) {
-                val remaining = lastOffset - offset //- chunkSize + 1
+                val remaining = lastOffset - offset
                 val chunk = Math.min(remaining, chunkSize).toInt
                 compounds.readArrayBlockWithOffset(path, entryType, chunk, offset).toList
               } else {
@@ -68,8 +68,7 @@ class TSDB(val fileName: String) {
                 }
             }
 
-            val chunk = readChunk(i)
-            generateRange(chunk)
+            generateRange(readChunk(i))
 
           }.getOrElse(Nil)
         }.getOrElse(Nil)
