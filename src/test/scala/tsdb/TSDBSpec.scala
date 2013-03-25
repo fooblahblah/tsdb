@@ -1,44 +1,44 @@
 package tsdb
 
-import scala.concurrent.ExecutionContext.Implicits.global
+import Implicits._
+import java.io.File
 import java.util.Date
-import org.joda.time._
-import org.specs2.mutable.Specification
+import org.joda.time.DateTime
 import org.junit.runner._
+import org.specs2.mutable.Specification
 import org.specs2.runner._
+import org.specs2.time.Duration
+import scala.concurrent.ExecutionContext.Implicits.global
+import java.util.concurrent.TimeUnit
+
 
 @RunWith(classOf[JUnitRunner])
 class TSDBSpec extends Specification {
-   val db        = new TSDB("/tmp/tsdb.h5")
-   val path      = "stats_counts/site/web_traffic/impression"
-   val startTime = System.currentTimeMillis()
+  sequential
+
+  val dbPath = "/tmp/tsdb.h5"
+  new File(dbPath).delete
+
+  val db    = new TSDB(dbPath)
+  val path  = "stats_counts/site/web_traffic/impression"
+  val start = new DateTime(System.currentTimeMillis())
+  println("init")
 
   "TSDB" should {
-    step {
-      println("writing test data")
-
-      0 until TSDB.SECONDS_PER_DAY foreach { i =>
-        val t = startTime + (i * 1000)
-        db.write(path, t, Math.random() * 100)
-      }
-
-      println(s"write time: ${System.currentTimeMillis() - startTime}")
+    "write data" in {
+      db.write(path, start, Math.random() * 100)
+      db.write(path, start.plusSeconds(1), Math.random() * 100)
+      db.write(path, start.plusSeconds(2), Math.random() * 100)
+      db.read(path, start, start.plusSeconds(2)).length must eventually(5, new Duration(500))(be_==(3))
     }
 
     "Read basic range" in {
-      val start = new DateTime(startTime)
-
-      val startTime2 = System.currentTimeMillis()
-
-      val results = db.read(path, start.toDate.getTime, start.plusHours(1).toDate.getTime)
-      println(s"${results.length}, ${results.headOption.map(e => new Date(e.timestamp))}, ${results.lastOption.map(e => new Date(e.timestamp))}")
-      println(s"read time: ${System.currentTimeMillis() - startTime2}")
-      results.length == 3601
+      db.read(path, start, start.plusHours(1)).length must eventually(5, new Duration(500))(be_==(3))
     }
 
     step {
       db.stop map { _ =>
-        println("done!")
+        println("DB shutdown successfully")
       }
     }
   }

@@ -14,6 +14,7 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import java.util.concurrent.ConcurrentHashMap
 import cache.SimpleStage
 import ch.systemsx.cisd.hdf5.IHDF5WriterConfigurator.SyncMode
+import org.joda.time.DateTime
 
 class TSDB(val fileName: String) {
   private val writer    = HDF5Factory.open(fileName)
@@ -26,28 +27,7 @@ class TSDB(val fileName: String) {
 
   private val chunkSize = 4096
 
-  /**
-   *  Callback to evict and flush via writer
-   */
-  private def evict(path: String, entries: List[Entry]) {
-    val offset = metricOffsets.get(path)
-//    println(s"($offset) evict $path ${entries.length}")
-    writer.writeCompoundArrayBlockWithOffset(path, entryType, entries.toArray, offset)
-    metricOffsets.replace(path, offset, offset + entries.length)
-  }
-
-  // Determines whether it's time to flush based on capacity
-  private def atCapacity(entries: List[Entry]) = entries.length >= 128
-
-  private def initializePathAndOffset(path: String) {
-    if(!writer.exists(path)) {
-      compounds.createArray(path, entryType, TSDB.SECONDS_PER_DAY)
-    }
-
-    metricOffsets.putIfAbsent(path, 0)
-
-//      writer.setDataSetSize(path, TSDB.SECONDS_PER_DAY * 2) // This is how you grow the array
-  }
+  private val offsetRoot = "/offsets"
 
 
   /**
@@ -56,43 +36,96 @@ class TSDB(val fileName: String) {
    */
   def write(path: String, timestamp: Long, value: Double) {
     initializePathAndOffset(path)
-    stage.put(path, List(Entry(timestamp, value)))
+    stage.put(path, List(Entry(new DateTime(timestamp).withMillisOfSecond(0).getMillis, value)))
   }
 
 
   def read(path: String, start: Long, end: Long): List[Entry] = {
     if(writer.exists(path)) {
-      val numEntries  = writer.getNumberOfElements(path) - 1
+      Option(metricOffsets.get(path)).map { lastOffset =>
 
-      // Ensure the start is after the actual start, otherwise just use actual start
-      compounds.readArrayBlockWithOffset(path, entryType, 1, 0).headOption.map(_.timestamp).map(actual => if(actual < start) start else actual).map { start =>
+        // Ensure the start is after the actual start, otherwise just use actual start
+        compounds.readArrayBlockWithOffset(path, entryType, 1, 0).headOption.map(_.timestamp).map(actual => if(actual < start) start else actual).map { start =>
 
-        binarySearch(path, start, 0, numEntries).map { i =>
-          def readChunk(offset: Long) = {
-            if(offset < numEntries) {
-              val remaining = numEntries - offset - chunkSize + 1
-              val chunk = if(remaining < 0) Math.abs(remaining).toInt else chunkSize
-              compounds.readArrayBlockWithOffset(path, entryType, chunk, offset).toList
-            } else {
-              Nil
-            }
-          }
-
-          def generateRange(l: List[Entry]): List[Entry] = l match {
-            case Nil                           => Nil
-            case _ if(l.last.timestamp) > end  => l.reverse.dropWhile(_.timestamp > end).reverse
-            case _                             =>
-              readChunk(l.length) match {
-                case Nil => l
-                case xs  => generateRange(l ++ xs)
+          binarySearch(path, start, 0, lastOffset).map { i =>
+            def readChunk(offset: Long) = {
+              if(offset < lastOffset) {
+                val remaining = lastOffset - offset //- chunkSize + 1
+                val chunk = Math.min(remaining, chunkSize).toInt
+                compounds.readArrayBlockWithOffset(path, entryType, chunk, offset).toList
+              } else {
+                Nil
               }
-          }
+            }
 
-          generateRange(readChunk(i))
+            def generateRange(l: List[Entry]): List[Entry] = l match {
+              case Nil                          => Nil
+              case _ if(l.last.timestamp) > end => l.reverse.dropWhile(_.timestamp > end).reverse
+              case _                            =>
+                readChunk(l.length) match {
+                  case Nil => l
+                  case xs  => generateRange(l ++ xs)
+                }
+            }
 
+            val chunk = readChunk(i)
+            generateRange(chunk)
+
+          }.getOrElse(Nil)
         }.getOrElse(Nil)
       }.getOrElse(Nil)
     } else Nil
+  }
+
+
+  def stop = {
+    for {
+      _ <- stage.stop
+      f <- Future.successful(writer.close)
+    } yield f
+  }
+
+
+  /**
+   *  Callback to evict and flush via writer
+   */
+  private def evict(path: String, entries: List[Entry]) {
+    val offset = metricOffsets.get(path)
+    writer.writeCompoundArrayBlockWithOffset(path, entryType, entries.toArray, offset)
+
+    val newOffset = offset + entries.length
+    if(metricOffsets.replace(path, offset, newOffset)) writeOffset(path, newOffset)
+  }
+
+
+  // Determines whether it's time to flush based on capacity
+  private def atCapacity(entries: List[Entry]) = entries.length >= 128
+
+
+  private def initializePathAndOffset(path: String) {
+    if(!writer.exists(path)) {
+      compounds.createArray(path, entryType, TSDB.SECONDS_PER_DAY)
+    }
+
+    // Get the stored offset to the last record
+    metricOffsets.putIfAbsent(path, readOffset(path))
+  }
+
+
+  private def readOffset(path: String): Long = {
+    val offsetPath = s"$offsetRoot/$path"
+
+    if(!writer.exists(offsetPath)) 0
+    else writer.readLong(offsetPath)
+  }
+
+
+  private def writeOffset(path: String, offset: Long) {
+    val offsetPath = s"$offsetRoot/$path"
+    writer.writeLong(offsetPath, offset)
+
+    if(offset % TSDB.SECONDS_PER_DAY == 0)
+      writer.setDataSetSize(path, TSDB.SECONDS_PER_DAY * 2) // This is how you grow the array
   }
 
 
@@ -110,14 +143,6 @@ class TSDB(val fileName: String) {
 
   private def readBlock(path: String, offset: Long): Entry = {
     compounds.readArrayBlockWithOffset(path, entryType, 1, offset).head
-  }
-
-
-  def stop = {
-    for {
-      _ <- stage.stop
-      f <- Future.successful(writer.close)
-    } yield f
   }
 }
 
@@ -156,3 +181,6 @@ object Entry {
   }
 }
 
+object Implicits {
+  implicit def jodaToMillis(d: DateTime): Long = d.withMillisOfSecond(0).getMillis
+}
