@@ -10,6 +10,7 @@ import org.specs2.runner._
 import org.specs2.time.Duration
 import scala.concurrent.ExecutionContext.Implicits.global
 import java.util.concurrent.TimeUnit
+import org.joda.time.DateMidnight
 
 
 @RunWith(classOf[JUnitRunner])
@@ -21,22 +22,41 @@ class TSDBSpec extends Specification {
 
   val db    = new TSDB(dbPath)
   val path  = "stats_counts/site/web_traffic/impression"
-  val start = new DateTime(System.currentTimeMillis())
+  val start = new DateTime(new DateMidnight())
 
   "TSDB" should {
-    "write a days worth of data" in {
+    "write a day's worth of data" in {
+      skipped("disable")
+      val begin = System.currentTimeMillis()
+
       0 until 86400 foreach { i =>
-        db.write(path, start + (i*1000), Math.random() * 100)
+        db.write(path, start.plusSeconds(i), Math.random() * 100)
       }
+
+      println(s"elapsed = ${System.currentTimeMillis() - begin}")
     }
 
-    "read first 3 data points" in {
-      db.read(path, start, start.plusSeconds(2)).length must eventually(5, new Duration(500))(be_==(3))
+    "read first 5 data points" in {
+      db.write(path, start, Math.random() * 100)
+      db.write(path, start.plusSeconds(1), Math.random() * 100)
+//      db.write(path, start.plusSeconds(2), Math.random() * 100)
+      db.write(path, start.plusSeconds(3), Math.random() * 100)
+      db.write(path, start.plusSeconds(4), Math.random() * 100)
+
+      db.read(path, start, start.plusSeconds(4)).length must eventually(5, new Duration(500))(be_==(5))
     }
 
-    "read ranges outside bounds" in {
-      db.read(path, start.minusHours(1), start.plusHours(1)).length must eventually(5, new Duration(500))(be_==(3601))
+    "read gappy data" in {
+      db.write(path, start.plusSeconds(10).getMillis, Math.random() * 100)
+
+      println(db.read(path, start, start.plusSeconds(10)))
+
+      db.read(path, start, start.plusSeconds(10)).length must eventually(5, new Duration(500))(be_==(5))
     }
+
+//    "read ranges outside bounds" in {
+//      db.read(path, start.minusHours(1), start.plusHours(1)).length must eventually(5, new Duration(500))(be_==(3601))
+//    }
 
     step {
       db.stop map { _ =>
