@@ -46,6 +46,7 @@ class TSDBSpec extends Specification {
       db.write(path, start.plusSeconds(4), v)
 
       db.read(path, start, start.plusSeconds(4)).lastOption.flatMap(_.value) must eventually(5, new Duration(500))(beSome(v))
+      db.read(path, start, start.plusSeconds(4)).length === 5
     }
 
     "read gappy data" in {
@@ -53,6 +54,7 @@ class TSDBSpec extends Specification {
       val v = Math.random() * 100
       db.write(path, start.plusSeconds(10).getMillis, v)
       db.read(path, start, start.plusSeconds(10)).lastOption.flatMap(_.value) must eventually(5, new Duration(500))(beSome(v))
+      db.read(path, start, start.plusSeconds(10)).length === 11
     }
 
     "read/write day boundaries" in {
@@ -61,12 +63,15 @@ class TSDBSpec extends Specification {
       db.write(path, start.plusSeconds(86399).getMillis, Math.random() * 100)
       db.write(path, start.plusSeconds(86400).getMillis, Math.random() * 100)
       db.write(path, start.plusSeconds(86401).getMillis, v)
+
       val f = () => {
         val r = db.read(path, start.plusSeconds(86399), start.plusSeconds(86401))
 //        println(r)
         r
       }
+
       f().lastOption.flatMap(_.value) must eventually(5, new Duration(500))(beSome(v))
+      f().length === 3
     }
 
     "read ranges outside bounds" in {
