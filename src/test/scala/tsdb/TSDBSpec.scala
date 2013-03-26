@@ -37,6 +37,7 @@ class TSDBSpec extends Specification {
     }
 
     "read first 5 data points" in {
+//      skipped("disable")
       db.write(path, start, Math.random() * 100)
       db.write(path, start.plusSeconds(1), Math.random() * 100)
       db.write(path, start.plusSeconds(2), Math.random() * 100)
@@ -47,16 +48,29 @@ class TSDBSpec extends Specification {
     }
 
     "read gappy data" in {
+//      skipped("disable")
       val v = Math.random() * 100
       db.write(path, start.plusSeconds(10).getMillis, v)
-      db.read(path, start, start.plusSeconds(10)).lastOption.map(_.value) must eventually(5, new Duration(500))(beSome(v))
+      db.read(path, start, start.plusSeconds(10)).lastOption.flatMap(_.value) must eventually(5, new Duration(500))(beSome(v))
     }
 
-    "read ranges outside bounds" in {
-//      db.read(path, start.minusHours(1), start.plusHours(1)).length must eventually(5, new Duration(500))(be_==(3601))
-      println(db.read(path, start, start.plusMinutes(10)))
-      db.read(path, start, start.plusHours(1)).length must eventually(5, new Duration(500))(be_==(3601))
+    "read/write day boundaries" in {
+      db.write(path, start.plusSeconds(86399).getMillis, Math.random() * 100)
+      db.write(path, start.plusSeconds(86400).getMillis, Math.random() * 100)
+      db.write(path, start.plusSeconds(86401).getMillis, Math.random() * 100)
+      val f = () => {
+        val r = db.read(path, start.plusSeconds(86399), start.plusSeconds(86401))
+        println(r)
+        r
+      }
+      f().length must eventually(5, new Duration(500))(be_==(3))
     }
+
+//    "read ranges outside bounds" in {
+////      db.read(path, start.minusHours(1), start.plusHours(1)).length must eventually(5, new Duration(500))(be_==(3601))
+//      println(db.read(path, start, start.plusMinutes(10)))
+//      db.read(path, start, start.plusHours(1)).length must eventually(5, new Duration(500))(be_==(3601))
+//    }
 
     step {
       db.stop map { _ =>

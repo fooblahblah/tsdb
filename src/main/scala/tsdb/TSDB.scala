@@ -22,9 +22,9 @@ class TSDB(val fileName: String) {
 
   private val writer    = HDF5Factory.open(fileName)
   private val compounds = writer.compounds()
-  private val entryType = compounds.getInferredType(classOf[Entry])
+  private val entryType = compounds.getInferredType(classOf[InternalEntry])
 
-  private val stage = SimpleStage[String, List[Entry]](Duration(250, TimeUnit.MILLISECONDS), atCapacity, evict)
+  private val stage = SimpleStage[String, List[InternalEntry]](Duration(250, TimeUnit.MILLISECONDS), atCapacity, evict)
 
 
   /**
@@ -33,7 +33,7 @@ class TSDB(val fileName: String) {
    * subPath by day then the second slot corresponding to the seconds of the day for the timestamp.
    */
   def write(path: String, timestamp: Long, value: Double) {
-    stage.put(path, List(Entry(new DateTime(timestamp).withMillisOfSecond(0).getMillis, value)))
+    stage.put(path, List(InternalEntry(new DateTime(timestamp).withMillisOfSecond(0).getMillis, value)))
   }
 
 
@@ -45,11 +45,24 @@ class TSDB(val fileName: String) {
       val offset    =  new DateTime(start).secondOfDay().get
       val startPath = s"$path/${new DateTime(start).withMillisOfDay(0).getMillis}"
 
-      if(writer.exists(startPath)) {
-        val diff = remaining - SECONDS_PER_DAY
+      def foldEntries(entries: Seq[InternalEntry]): List[Entry] = {
+        entries.foldLeft((0, List[Entry]())) { (acc, e) =>
+          val (i, es) = acc
 
-        if(diff <= 0) compounds.readArrayBlockWithOffset(startPath, entryType, remaining, offset).toList
-        else          compounds.readArrayBlockWithOffset(startPath, entryType, SECONDS_PER_DAY, offset).toList ++ readSegment(new DateTime(start).plusSeconds(SECONDS_PER_DAY).getMillis, diff)
+          val entry = if(e.timestamp == 0) {
+            Entry(new DateTime(start).plusSeconds(i).getMillis, None)
+          } else Entry(e.timestamp, Some(e.value))
+
+          (i + 1, es :+ entry)
+        }._2
+      }
+
+      if(writer.exists(startPath)) {
+        val diff = SECONDS_PER_DAY - offset
+
+        if(remaining <= diff) foldEntries(compounds.readArrayBlockWithOffset(startPath, entryType, remaining, offset))
+        else                  foldEntries(compounds.readArrayBlockWithOffset(startPath, entryType, diff, offset)) ++
+                                readSegment(new DateTime(start).plusSeconds(diff).getMillis, remaining - diff)
       } else Nil
     }
 
@@ -70,15 +83,12 @@ class TSDB(val fileName: String) {
    *  Callback to evict and flush via writer. For each entry, the day is calculated and the
    *  entries are grouped by day. Entries are written to their respective second slots in each day.
    */
-  private def evict(path: String, evicted: List[Entry]) {
+  private def evict(path: String, evicted: List[InternalEntry]) {
     evicted.sortBy(_.timestamp).groupBy(e => new DateTime(e.timestamp).withMillisOfDay(0).getMillis) foreach { kv =>
       val subPath = s"$path/${kv._1}"
-      if(!writer.exists(subPath)) {
-        compounds.createArray(subPath, entryType, SECONDS_PER_DAY)
-//        compounds.writeArrayBlockWithOffset(subPath, entryType, (1 to SECONDS_PER_DAY).map(_ => Entry(-1, 0)).toArray, 0)
-      }
+      if(!writer.exists(subPath)) compounds.createArray(subPath, entryType, SECONDS_PER_DAY)
 
-      def writeEntries(entries: List[Entry]) {
+      def writeEntries(entries: List[InternalEntry]) {
         entries.headOption.map { e =>
           val offset = new DateTime(e.timestamp).secondOfDay().get
           writer.writeCompoundArrayBlockWithOffset(subPath, entryType, entries.toArray, offset)
@@ -86,7 +96,7 @@ class TSDB(val fileName: String) {
       }
 
       @tailrec
-      def writeSegment(entries: List[Entry]) {
+      def writeSegment(entries: List[InternalEntry]) {
 //        println(s"writeSegment $entries")
         entries.zip(entries.drop(1)).indexWhere(pair => pair._2.timestamp - pair._1.timestamp > TSDB.MILLIS_PER_SECOND) match {
           case i if(i == -1) => writeEntries(entries)
@@ -111,7 +121,7 @@ class TSDB(val fileName: String) {
 
 
   // Determines whether it's time to flush based on capacity
-  private def atCapacity(entries: List[Entry]) = entries.length >= 128
+  private def atCapacity(entries: List[InternalEntry]) = entries.length >= 128
 
 
   private def binarySearch(path: String, v: Long, low: Long, high: Long): Option[Long] = {
@@ -126,7 +136,7 @@ class TSDB(val fileName: String) {
   }
 
 
-  private def readBlock(path: String, offset: Long): Entry = {
+  private def readBlock(path: String, offset: Long): InternalEntry = {
     compounds.readArrayBlockWithOffset(path, entryType, 1, offset).head
   }
 }
@@ -142,10 +152,12 @@ object TSDB {
 }
 
 
+case class Entry(timestamp: Long, value: Option[Double])
+
 /**
  * Value object representing an entry in the TSDB
  */
-class Entry {
+class InternalEntry {
   @BeanProperty
   var timestamp: Long = -1
 
@@ -157,9 +169,9 @@ class Entry {
   }
 }
 
-object Entry {
+object InternalEntry {
   def apply(_timestamp: Long, _value: Double) = {
-    val e = new Entry
+    val e = new InternalEntry
     e.timestamp = _timestamp
     e.value = _value
     e
