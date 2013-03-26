@@ -57,13 +57,13 @@ class TSDB(val fileName: String) {
         }._2
       }
 
-      if(writer.exists(startPath)) {
-        val diff = SECONDS_PER_DAY - offset
+      val diff = SECONDS_PER_DAY - offset
 
-        if(remaining <= diff) foldEntries(compounds.readArrayBlockWithOffset(startPath, entryType, remaining, offset))
-        else                  foldEntries(compounds.readArrayBlockWithOffset(startPath, entryType, diff, offset)) ++
-                                readSegment(new DateTime(start).plusSeconds(diff).getMillis, remaining - diff)
-      } else Nil
+      if(remaining <= diff)
+        foldEntries(readRange(startPath, remaining, offset))
+      else
+        foldEntries(readRange(startPath, diff, offset)) ++
+          readSegment(new DateTime(start).plusSeconds(diff).getMillis, remaining - diff)
     }
 
     val secondsBetween = Seconds.secondsBetween(new DateTime(start).withMillisOfSecond(0), new DateTime(end).withMillisOfSecond(0)).getSeconds
@@ -88,28 +88,6 @@ class TSDB(val fileName: String) {
       val subPath = s"$path/${kv._1}"
       if(!writer.exists(subPath)) compounds.createArray(subPath, entryType, SECONDS_PER_DAY)
 
-      def writeEntries(entries: List[InternalEntry]) {
-        entries.headOption.map { e =>
-          val offset = new DateTime(e.timestamp).secondOfDay().get
-          writer.writeCompoundArrayBlockWithOffset(subPath, entryType, entries.toArray, offset)
-        }
-      }
-
-      @tailrec
-      def writeSegment(entries: List[InternalEntry]) {
-//        println(s"writeSegment $entries")
-        entries.zip(entries.drop(1)).indexWhere(pair => pair._2.timestamp - pair._1.timestamp > TSDB.MILLIS_PER_SECOND) match {
-          case i if(i == -1) => writeEntries(entries)
-
-          case i =>
-            val parted = entries.splitAt(i)
-            writeEntries(parted._1)
-            writeSegment(parted._2)
-        }
-      }
-
-//      writeSegment(kv._2)
-
       kv._2.foreach { e =>
         val offset = new DateTime(e.timestamp).secondOfDay().get
         writer.writeCompoundArrayBlockWithOffset(subPath, entryType, Array(e), offset)
@@ -124,20 +102,14 @@ class TSDB(val fileName: String) {
   private def atCapacity(entries: List[InternalEntry]) = entries.length >= 128
 
 
-  private def binarySearch(path: String, v: Long, low: Long, high: Long): Option[Long] = {
-    def recurse(low: Long, high: Long): Option[Long] = (low + high) / 2 match {
-      case _ if high < low => None
-      case mid if readBlock(path, mid).timestamp > v => recurse(low, mid - 1)
-      case mid if readBlock(path, mid).timestamp < v => recurse(mid + 1, high)
-      case mid => Some(mid)
-    }
-
-    recurse(0, high)
-  }
-
-
-  private def readBlock(path: String, offset: Long): InternalEntry = {
-    compounds.readArrayBlockWithOffset(path, entryType, 1, offset).head
+  /**
+   * Reads a range of InteralEntries or generates place holders
+   */
+  private def readRange(path: String, count: Int, offset: Long): List[InternalEntry] = {
+    if(!writer.exists(path))
+        (1 to count) map (_ => InternalEntry(0, 0)) toList
+     else
+        compounds.readArrayBlockWithOffset(path, entryType, count, offset).toList
   }
 }
 
