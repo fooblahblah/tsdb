@@ -16,6 +16,7 @@ import ch.systemsx.cisd.hdf5.IHDF5WriterConfigurator.SyncMode
 import org.joda.time._
 import scala.annotation.tailrec
 import org.joda.time.Days
+import java.lang.System
 
 class TSDB(val fileName: String) {
   import TSDB._
@@ -46,15 +47,15 @@ class TSDB(val fileName: String) {
       val startPath = s"$path/${new DateTime(start).withMillisOfDay(0).getMillis}"
 
       def foldEntries(entries: Seq[InternalEntry]): List[Entry] = {
-        entries.foldLeft((0, List[Entry]())) { (acc, e) =>
-          val (i, es) = acc
+        val start = System.currentTimeMillis()
 
-          val entry = if(e.timestamp == 0) {
-            Entry(new DateTime(start).plusSeconds(i).getMillis, None)
+        entries.zipWithIndex.map { tuple =>
+          val (e, i) = tuple
+
+          if(e.timestamp == 0) {
+            Entry(start + (MILLIS_PER_SECOND * i), None)
           } else Entry(e.timestamp, Some(e.value))
-
-          (i + 1, es :+ entry)
-        }._2
+        }.toList
       }
 
       val diff = SECONDS_PER_DAY - offset

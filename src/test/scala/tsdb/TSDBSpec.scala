@@ -46,9 +46,9 @@ class TSDBSpec extends Specification {
       db.write(path, start.plusSeconds(4), v)
 
       db.read(path, start, start.plusSeconds(4)).lastOption.flatMap(_.value) must eventually(5, new Duration(500))(beSome(v))
-      db.read(path, start, start.plusSeconds(4)).length === 5
     }
 
+    db.read(path, start, start.plusSeconds(4)).length === 5
     "read gappy data" in {
 //      skipped("disable")
       val v = Math.random() * 100
@@ -87,6 +87,9 @@ class TSDBSpec extends Specification {
       f().lastOption.flatMap(_.value) must eventually(5, new Duration(500))(beSome(v))
     }
 
+    "read day of data" in {
+      db.read(path, start, start.plusHours(24)).length must eventually(5, new Duration(500))(be_==(86401))
+    }
     step {
       db.stop map { _ =>
         println("DB shutdown successfully")
