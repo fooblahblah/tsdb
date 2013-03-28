@@ -37,20 +37,18 @@ class TSDBSpec extends Specification with BeforeExample {
   }
 
   "TSDB" should {
-    "write a day's worth of data" in {
-      skipped("disable")
-      val begin = System.currentTimeMillis()
-
-      val futures = 0 until 86400 map { i =>
-        db.write(metric, start.plusSeconds(i), Math.random() * 100)
-      }
-
-      futures.foreach(_.get())
-      println(s"elapsed = ${System.currentTimeMillis() - begin}")
-    }
+//    "write a day's worth of data" in {
+//      val begin = System.currentTimeMillis()
+//
+//      val futures = 0 until 86400 map { i =>
+//        db.write(metric, start.plusSeconds(i), Math.random() * 100)
+//      }
+//
+//      futures.foreach(_.get())
+//      println(s"elapsed = ${System.currentTimeMillis() - begin}")
+//    }
 
     "read first 5 data points" in {
-//      skipped("disable")
       val v = Math.random() * 100
       db.write(metric, start, Math.random() * 100)
       db.write(metric, start.plusSeconds(1), Math.random() * 100)
@@ -58,11 +56,12 @@ class TSDBSpec extends Specification with BeforeExample {
       db.write(metric, start.plusSeconds(3), Math.random() * 100)
       db.write(metric, start.plusSeconds(4), v)
 
-      Await.result(db.read(metric, start, start.plusSeconds(4)).map(_.lastOption.flatMap(_.value)), Duration(15, SECONDS)) === Some(v)
+      val result = Await.result(db.read(metric, start, start.plusSeconds(4)), Duration(15, SECONDS))
+      result.length === 5
+      result.lastOption.flatMap(_.value) === Some(v)
     }
 
     "read gappy data" in {
-//      skipped("disable")
       val v = Math.random() * 100
       db.write(metric, start.plusSeconds(10).getMillis, v)
       val result = Await.result(db.read(metric, start, start.plusSeconds(10)), Duration(15, SECONDS))
@@ -71,7 +70,6 @@ class TSDBSpec extends Specification with BeforeExample {
     }
 
     "read/write day boundaries" in {
-//      skipped("disable")
       val v = Math.random() * 100
       db.write(metric, start.plusSeconds(86399).getMillis, Math.random() * 100)
       db.write(metric, start.plusSeconds(86400).getMillis, Math.random() * 100)
@@ -83,21 +81,16 @@ class TSDBSpec extends Specification with BeforeExample {
     }
 
     "read ranges outside bounds" in {
-//      skipped("disable")
       val v = Math.random() * 100
       db.write(metric, start, v)
 
-      val result = Await.result(db.read(metric, start.minusHours(1), start), Duration(15, SECONDS))
-      result.lastOption.flatMap(_.value) === Some(v)
+      val result = Await.result(db.read(metric, start.minusMinutes(1), start.plusSeconds(10)), Duration(15, SECONDS))
+      result.length === 71
+      result.drop(60).head.value === Some(v)
     }
 
     "read day of data" in {
-//      skipped("disable")
       Await.result(db.read(metric, start, start.plusHours(24)), Duration(15, SECONDS)).length === 86400
-    }
-
-    step {
-//      db.stop
     }
 
   }

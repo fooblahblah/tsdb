@@ -83,7 +83,7 @@ class TSDB(config: Config) {
 
     @tailrec
     def dayRangeMillis(start: Long, remaining: Long, days: List[Long] = Nil): List[Long] = {
-      if(remaining >= 0) {
+      if(remaining > 0) {
         val startDate = new DateTime(start)
         val diff      = SECONDS_PER_DAY - startDate.secondOfDay.get
         val offset    = (diff * MILLIS_PER_SECOND)
@@ -93,6 +93,8 @@ class TSDB(config: Config) {
 
     dayRangeMillis(start, end - start).foldLeft(Future.successful(List[Entry]())) { (acc, day) =>
       acc.flatMap(l => readDateRange(metric, day, start, end).map(l ++ _))
+    }.map { l =>
+      expandSeries(start, end, l)
     }
   }
 
@@ -100,25 +102,10 @@ class TSDB(config: Config) {
   private def readDateRange(metric: String, rowTime: Long, start: Long, end: Long): Future[Seq[Entry]] = {
     val query = """SELECT time, value FROM timeseries WHERE id=? AND time >= ? AND time <= ?;"""
     val id    = s"$metric:$rowTime"
-    println(id, start, end)
 
-    def expandRange(last: Long, l: List[Entry]): List[Entry] = {
-      l match {
-        case Nil => l
-
-        case x :: xs =>
-          val secs = Seconds.secondsBetween(new DateTime(last), new DateTime(x.timestamp)).getSeconds()
-          if(secs > 1) {
-            val expanded = (1 to secs).map(i => Entry(last + (MILLIS_PER_SECOND * secs), None)).toList
-            expanded ++ List(x) ++ expandRange(last + (MILLIS_PER_SECOND * secs), xs)
-          }
-          else
-            x :: expandRange(x.timestamp + MILLIS_PER_SECOND, xs)
-      }
-    }
 
     Future {
-      val entries = keyspace
+      keyspace
         .prepareQuery(TS_CF)
         .withCql(query)
         .asPreparedStatement()
@@ -131,10 +118,39 @@ class TSDB(config: Config) {
           val ts    = cols.getColumnByIndex(0).getLongValue()
           val value = cols.getColumnByIndex(1).getDoubleValue()
           Entry(ts, Some(value))
-        }
-
-      expandRange(start, entries.toList)
+        }.toList
     }
+  }
+
+
+  def expandSeries(start: Long, end: Long, entries: List[Entry]): List[Entry] = {
+    def _expander(cur: Long, l: List[Entry]) = {
+      l match {
+        // Pad head with missing entries
+        case x :: xs if x.timestamp > start =>
+          val secs = Seconds.secondsBetween(new DateTime(cur), new DateTime(x.timestamp)).getSeconds()
+          val expanded = (0 until secs).map(i => Entry(cur + (MILLIS_PER_SECOND * i), None)).toList
+          expanded ++ List(x) ++ expandSeries(cur + (MILLIS_PER_SECOND * secs), end, xs)
+
+        // Fill gaps betweem entries
+        case x :: xs =>
+          val secs = Seconds.secondsBetween(new DateTime(cur), new DateTime(x.timestamp)).getSeconds()
+          if(secs > 1) {
+            val expanded = (1 until secs).map(i => Entry(cur + (MILLIS_PER_SECOND * i), None)).toList
+            expanded ++ List(x) ++ expandSeries(x.timestamp + (MILLIS_PER_SECOND * secs), end, xs)
+          } else
+            x :: expandSeries(x.timestamp + MILLIS_PER_SECOND, end, xs)
+
+        // Pad the end of the list
+        case Nil if cur < end =>
+          val secs = Seconds.secondsBetween(new DateTime(cur), new DateTime(end)).getSeconds()
+          (0 until secs).map(i => Entry(cur + (MILLIS_PER_SECOND * i), None)).toList
+
+        case Nil => Nil
+      }
+    }
+
+    _expander(start, entries)
   }
 
 
@@ -144,6 +160,7 @@ class TSDB(config: Config) {
       .withCql("TRUNCATE timeseries")
       .execute()
   }
+
 
   def stop = {
     context.shutdown()
