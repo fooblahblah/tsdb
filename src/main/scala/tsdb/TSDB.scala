@@ -1,31 +1,58 @@
 package tsdb
 
-import akka.util.Timeout
-import ch.systemsx.cisd.hdf5._
+import cache.SimpleStage
+import com.netflix.astyanax.AstyanaxContext
+import com.netflix.astyanax.connectionpool.NodeDiscoveryType
+import com.netflix.astyanax.connectionpool.impl.ConnectionPoolConfigurationImpl
+import com.netflix.astyanax.connectionpool.impl.CountingConnectionPoolMonitor
+import com.netflix.astyanax.impl.AstyanaxConfigurationImpl
+import com.netflix.astyanax.model.ColumnFamily
+import com.netflix.astyanax.serializers.LongSerializer
+import com.netflix.astyanax.serializers.StringSerializer
+import com.netflix.astyanax.thrift.ThriftFamilyFactory
+import com.typesafe.config.Config
+import org.joda.time._
 import scala.collection.JavaConversions._
-import scala.reflect._
-import cache.Stage
-import java.util.concurrent.TimeUnit
+import scala.annotation.tailrec
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
 import scalaz._
 import Scalaz._
-import scala.concurrent._
-import scala.concurrent.duration.Duration
-import scala.concurrent.ExecutionContext.Implicits.global
-import cache.SimpleStage
-import ch.systemsx.cisd.hdf5.IHDF5WriterConfigurator.SyncMode
-import org.joda.time._
-import scala.annotation.tailrec
-import org.joda.time.Days
-import java.lang.System
+import scala.concurrent.Promise
 
-class TSDB(val fileName: String) {
+class TSDB(config: Config) {
+  type StageEntry = (Long, Double)
+
   import TSDB._
 
-  private val writer    = HDF5Factory.open(fileName)
-  private val compounds = writer.compounds()
-  private val entryType = compounds.getInferredType(classOf[InternalEntry])
+  private val host  = config.getString("server.host")
+  private val port  = config.getInt("server.port")
+  private val seeds = config.getString("server.seeds")
 
-  private val stage = SimpleStage[String, List[InternalEntry]](Duration(250, TimeUnit.MILLISECONDS), atCapacity, evict)
+  private val context = new AstyanaxContext.Builder()
+    .forCluster("Test Cluster")
+    .forKeyspace("ts_1")
+    .withAstyanaxConfiguration(new AstyanaxConfigurationImpl()
+        .setDiscoveryType(NodeDiscoveryType.RING_DESCRIBE)
+    )
+    .withConnectionPoolConfiguration(new ConnectionPoolConfigurationImpl("MyConnectionPool")
+        .setPort(port)
+        .setMaxConnsPerHost(1)
+        .setSeeds(seeds)
+    )
+    .withConnectionPoolMonitor(new CountingConnectionPoolMonitor())
+    .withAstyanaxConfiguration(new AstyanaxConfigurationImpl()
+        .setCqlVersion("3.0.0")
+        .setTargetCassandraVersion("1.2")
+    ) .buildKeyspace(ThriftFamilyFactory.getInstance())
+  context.start()
+
+  private val keyspace = context.getEntity()
+
+  private val TS_CF = ColumnFamily.newColumnFamily(
+      keyspace.getKeyspaceName(),
+      StringSerializer.get(),
+      LongSerializer.get())
 
 
   /**
@@ -33,84 +60,93 @@ class TSDB(val fileName: String) {
    * has 86400 entries, 1 for each second of the day. Entries are written into their respective
    * subPath by day then the second slot corresponding to the seconds of the day for the timestamp.
    */
-  def write(path: String, timestamp: Long, value: Double) {
-    stage.put(path, List(InternalEntry(new DateTime(timestamp).withMillisOfSecond(0).getMillis, value)))
+  def write(metric: String, timestamp: Long, value: Double) = {
+    val day = new DateMidnight(timestamp).getMillis
+    val id  = s"$metric:$day"
+    val ts  = new DateTime(timestamp).withMillisOfSecond(0).getMillis
+
+    val query = """INSERT INTO timeseries (id, time, value) VALUES (?, ?, ?);"""
+
+    keyspace
+      .prepareQuery(TS_CF)
+      .withCql(query)
+      .asPreparedStatement()
+      .withStringValue(id)
+      .withLongValue(ts)
+      .withDoubleValue(value)
+      .executeAsync()
   }
 
 
-  def read(path: String, start: Long, end: Long): List[Entry] = {
+  def read(metric: String, start: Long, end: Long): Future[List[Entry]] = {
     assert(start <= end)
 
-//    @tailrec
-    def readSegment(start: Long, remaining: Int): List[Entry] = {
-      val offset    =  new DateTime(start).secondOfDay().get
-      val startPath = s"$path/${new DateTime(start).withMillisOfDay(0).getMillis}"
-
-      def foldEntries(entries: Seq[InternalEntry]): List[Entry] = {
-        val start = System.currentTimeMillis()
-
-        entries.zipWithIndex.map { tuple =>
-          val (e, i) = tuple
-
-          if(e.timestamp == 0) {
-            Entry(start + (MILLIS_PER_SECOND * i), None)
-          } else Entry(e.timestamp, Some(e.value))
-        }.toList
-      }
-
-      val diff = SECONDS_PER_DAY - offset
-
-      if(remaining <= diff)
-        foldEntries(readRange(startPath, remaining, offset))
-      else
-        foldEntries(readRange(startPath, diff, offset)) ++
-          readSegment(new DateTime(start).plusSeconds(diff).getMillis, remaining - diff)
+    @tailrec
+    def dayRangeMillis(start: Long, remaining: Long, days: List[Long] = Nil): List[Long] = {
+      if(remaining >= 0) {
+        val startDate = new DateTime(start)
+        val diff      = SECONDS_PER_DAY - startDate.secondOfDay.get
+        val offset    = (diff * MILLIS_PER_SECOND)
+        dayRangeMillis(start + offset, remaining - offset, days :+ new DateMidnight(startDate).getMillis)
+      } else days
     }
 
-    val secondsBetween = Seconds.secondsBetween(new DateTime(start).withMillisOfSecond(0), new DateTime(end).withMillisOfSecond(0)).getSeconds
-    readSegment(start, secondsBetween + 1)
+    dayRangeMillis(start, end - start).foldLeft(Future.successful(List[Entry]())) { (acc, day) =>
+      acc.flatMap(l => readDateRange(metric, day, start, end).map(l ++ _))
+    }
   }
 
+
+  private def readDateRange(metric: String, rowTime: Long, start: Long, end: Long): Future[Seq[Entry]] = {
+    val query = """SELECT time, value FROM timeseries WHERE id=? AND time >= ? AND time <= ?;"""
+    val id    = s"$metric:$rowTime"
+    println(id, start, end)
+
+    def expandRange(last: Long, l: List[Entry]): List[Entry] = {
+      l match {
+        case Nil => l
+
+        case x :: xs =>
+          val secs = Seconds.secondsBetween(new DateTime(last), new DateTime(x.timestamp)).getSeconds()
+          if(secs > 1) {
+            val expanded = (1 to secs).map(i => Entry(last + (MILLIS_PER_SECOND * secs), None)).toList
+            expanded ++ List(x) ++ expandRange(last + (MILLIS_PER_SECOND * secs), xs)
+          }
+          else
+            x :: expandRange(x.timestamp + MILLIS_PER_SECOND, xs)
+      }
+    }
+
+    Future {
+      val entries = keyspace
+        .prepareQuery(TS_CF)
+        .withCql(query)
+        .asPreparedStatement()
+        .withStringValue(id)
+        .withLongValue(start)
+        .withLongValue(end)
+        .executeAsync()
+        .get().getResult().getRows().map { row =>
+          val cols  = row.getColumns()
+          val ts    = cols.getColumnByIndex(0).getLongValue()
+          val value = cols.getColumnByIndex(1).getDoubleValue()
+          Entry(ts, Some(value))
+        }
+
+      expandRange(start, entries.toList)
+    }
+  }
+
+
+  def truncateTimeseries() {
+    keyspace
+      .prepareQuery(TS_CF)
+      .withCql("TRUNCATE timeseries")
+      .execute()
+  }
 
   def stop = {
-    for {
-      _ <- stage.stop
-      f <- Future.successful(writer.close)
-    } yield f
-  }
-
-
-  /**
-   *  Callback to evict and flush via writer. For each entry, the day is calculated and the
-   *  entries are grouped by day. Entries are written to their respective second slots in each day.
-   */
-  private def evict(path: String, evicted: List[InternalEntry]) {
-    evicted.sortBy(_.timestamp).groupBy(e => new DateTime(e.timestamp).withMillisOfDay(0).getMillis) foreach { kv =>
-      val subPath = s"$path/${kv._1}"
-      if(!writer.exists(subPath)) compounds.createArray(subPath, entryType, SECONDS_PER_DAY)
-
-      kv._2.foreach { e =>
-        val offset = new DateTime(e.timestamp).secondOfDay().get
-        writer.writeCompoundArrayBlockWithOffset(subPath, entryType, Array(e), offset)
-      }
-    }
-
-    writer.flush()
-  }
-
-
-  // Determines whether it's time to flush based on capacity
-  private def atCapacity(entries: List[InternalEntry]) = entries.length >= 128
-
-
-  /**
-   * Reads a range of InteralEntries or generates place holders
-   */
-  private def readRange(path: String, count: Int, offset: Long): List[InternalEntry] = {
-    if(!writer.exists(path))
-        (1 to count) map (_ => InternalEntry(0, 0)) toList
-     else
-        compounds.readArrayBlockWithOffset(path, entryType, count, offset).toList
+    context.shutdown()
   }
 }
 
@@ -121,35 +157,12 @@ object TSDB {
   val MILLIS_PER_DAY    = SECONDS_PER_DAY * 1000
   val SECONDS_PER_DAY   = 86400
 
-  def apply(fileName: String) = new TSDB(fileName)
+  def apply(config: Config) = new TSDB(config)
 }
 
 
 case class Entry(timestamp: Long, value: Option[Double])
 
-/**
- * Value object representing an entry in the TSDB
- */
-class InternalEntry {
-  @BeanProperty
-  var timestamp: Long = -1
-
-  @BeanProperty
-  var value: Double = 0
-
-  override def toString() = {
-    s"($timestamp, $value)"
-  }
-}
-
-object InternalEntry {
-  def apply(_timestamp: Long, _value: Double) = {
-    val e = new InternalEntry
-    e.timestamp = _timestamp
-    e.value = _value
-    e
-  }
-}
 
 object Implicits {
   implicit def jodaToMillis(d: DateTime): Long = d.withMillisOfSecond(0).getMillis
