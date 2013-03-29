@@ -3,5 +3,9 @@
 .project
 .worksheet
 bin
+debugoutput
+log
 project
 target
+timeseries.jar
+voltdbroot

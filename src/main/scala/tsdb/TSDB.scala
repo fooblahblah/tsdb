@@ -1,17 +1,9 @@
 package tsdb
 
-import cache.SimpleStage
-import com.netflix.astyanax.AstyanaxContext
-import com.netflix.astyanax.connectionpool.NodeDiscoveryType
-import com.netflix.astyanax.connectionpool.impl.ConnectionPoolConfigurationImpl
-import com.netflix.astyanax.connectionpool.impl.CountingConnectionPoolMonitor
-import com.netflix.astyanax.impl.AstyanaxConfigurationImpl
-import com.netflix.astyanax.model.ColumnFamily
-import com.netflix.astyanax.serializers.LongSerializer
-import com.netflix.astyanax.serializers.StringSerializer
-import com.netflix.astyanax.thrift.ThriftFamilyFactory
 import com.typesafe.config.Config
 import org.joda.time._
+import org.voltdb._
+import org.voltdb.client._
 import scala.collection.JavaConversions._
 import scala.annotation.tailrec
 import scala.concurrent.Future
@@ -19,6 +11,7 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scalaz._
 import Scalaz._
 import scala.concurrent.Promise
+import scala.util.Try
 
 class TSDB(config: Config) {
   type StageEntry = (Long, Double)
@@ -29,55 +22,28 @@ class TSDB(config: Config) {
   private val port  = config.getInt("server.port")
   private val seeds = config.getString("server.seeds")
 
-  private val context = new AstyanaxContext.Builder()
-    .forCluster("Test Cluster")
-    .forKeyspace("ts_1")
-    .withAstyanaxConfiguration(new AstyanaxConfigurationImpl()
-        .setDiscoveryType(NodeDiscoveryType.RING_DESCRIBE)
-    )
-    .withConnectionPoolConfiguration(new ConnectionPoolConfigurationImpl("MyConnectionPool")
-        .setPort(port)
-        .setMaxConnsPerHost(1)
-        .setSeeds(seeds)
-    )
-    .withConnectionPoolMonitor(new CountingConnectionPoolMonitor())
-    .withAstyanaxConfiguration(new AstyanaxConfigurationImpl()
-        .setCqlVersion("3.0.0")
-        .setTargetCassandraVersion("1.2")
-    ) .buildKeyspace(ThriftFamilyFactory.getInstance())
-  context.start()
-
-  private val keyspace = context.getEntity()
-
-  private val TS_CF = ColumnFamily.newColumnFamily(
-      keyspace.getKeyspaceName(),
-      StringSerializer.get(),
-      LongSerializer.get())
-
+  private val client = ClientFactory.createClient()
+  client.createConnection(host)
 
   /**
    * Write a value to the path based on the day calculated from the timestamp. Each day node
    * has 86400 entries, 1 for each second of the day. Entries are written into their respective
    * subPath by day then the second slot corresponding to the seconds of the day for the timestamp.
    */
-  def write(metric: String, timestamp: Long, value: Double): Future[Int] = {
-    val day = new DateMidnight(timestamp).getMillis
-    val id  = s"$metric:$day"
+  def write(metric: String, timestamp: Long, value: Double): Future[Unit] = {
     val ts  = new DateTime(timestamp).withMillisOfSecond(0).getMillis
 
-    val query = """INSERT INTO timeseries (id, time, value) VALUES (?, ?, ?);"""
+    val callPromise = Promise[Unit]()
 
-    Future {
-      keyspace
-        .prepareQuery(TS_CF)
-        .withCql(query)
-        .asPreparedStatement()
-        .withStringValue(id)
-        .withLongValue(ts)
-        .withDoubleValue(value)
-        .executeAsync()
-        .get().getResult().getNumber()
+    val callback = new ProcedureCallback {
+      def clientCallback(response: ClientResponse) {
+        callPromise.success()
+      }
     }
+
+    client.callProcedure(callback, "Insert", metric.asInstanceOf[Object], ts.asInstanceOf[Object], value.asInstanceOf[Object])
+
+    callPromise.future
   }
 
 
@@ -88,48 +54,30 @@ class TSDB(config: Config) {
     val start = new DateTime(_start).withMillisOfSecond(0).getMillis
     val end   = new DateTime(_end).withMillisOfSecond(0).getMillis
 
-    @tailrec
-    def dayRangeMillis(start: Long, remaining: Long, days: List[Long] = Nil): List[Long] = {
-      if(remaining > 0) {
-        val startDate = new DateTime(start)
-        val diff      = SECONDS_PER_DAY - startDate.secondOfDay.get
-        val offset    = (diff * MILLIS_PER_SECOND)
-        dayRangeMillis(start + offset, remaining - offset, days :+ new DateMidnight(startDate).getMillis)
-      } else days
+    val callPromise = Promise[List[Entry]]()
+
+    val callback = new ProcedureCallback {
+      def clientCallback(response: ClientResponse) {
+        val results = response.getResults()
+
+        val entries = if (results.length == 0 || results(0).getRowCount() < 1) {
+          Nil
+        } else {
+          val resultTable = results(0)
+          (1 until resultTable.getRowCount()) map { i =>
+            val row = resultTable.fetchRow(i)
+            Entry(row.getLong("time"), Some(row.getDouble("value")))
+          }
+        }
+
+        callPromise.success(entries.toList)
+      }
     }
 
-    dayRangeMillis(start, end - start).foldLeft(Future.successful(List[Entry]())) { (acc, rowTime) =>
-      acc.flatMap(l => readDateRange(metric, rowTime, start, end).map(l ++ _))
-    }
-  }
+    println(s"Find($metric, $start, $end)")
+    client.callProcedure(callback, "Find", metric.asInstanceOf[Object], start.asInstanceOf[Object], end.asInstanceOf[Object])
 
-
-  private def readDateRange(metric: String, rowTime: Long, start: Long, end: Long): Future[Seq[Entry]] = {
-    val query = """SELECT time, value FROM timeseries WHERE id=? AND time >= ? AND time <= ?;"""
-    val id    = s"$metric:$rowTime"
-
-
-    Future {
-      val entries = keyspace
-        .prepareQuery(TS_CF)
-        .withCql(query)
-        .asPreparedStatement()
-        .withStringValue(id)
-        .withLongValue(start)
-        .withLongValue(end)
-        .executeAsync()
-        .get().getResult().getRows().map { row =>
-          val cols  = row.getColumns()
-          val ts    = cols.getColumnByIndex(0).getLongValue()
-          val value = cols.getColumnByIndex(1).getDoubleValue()
-          Entry(ts, Some(value))
-        }.toList
-
-      val rowStart   = if(start > rowTime) start else rowTime
-      val rowEndTime = new DateTime(rowTime).plusHours(24).minusSeconds(1).getMillis
-      val rowEnd     = if(end > rowEndTime) rowEndTime else end
-      expandSeries(rowStart, rowEnd, entries)
-    }
+    callPromise.future
   }
 
 
@@ -172,15 +120,7 @@ class TSDB(config: Config) {
 
 
   private [tsdb] def truncateTimeseries() {
-    keyspace
-      .prepareQuery(TS_CF)
-      .withCql("TRUNCATE timeseries")
-      .execute()
-  }
-
-
-  def stop = {
-    context.shutdown()
+    client.callProcedure("Delete")
   }
 }
 
