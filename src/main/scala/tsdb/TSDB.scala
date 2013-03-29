@@ -135,16 +135,17 @@ class TSDB(config: Config) {
 
   private def expandSeries(start: Long, end: Long, entries: List[Entry]): List[Entry] = {
     entries.foldLeft(List[Entry]()) { (acc, e) =>
-      if(!acc.isEmpty) {
-        val prev = acc.head.timestamp
+      acc.headOption.map { head  =>
+        val prev = head.timestamp
         val secs = secondsBetween(prev, e.timestamp)
-        if(secs > 1) {
-          val expanded = (secs - 1 to 1L by -1).map(i => Entry(prev + (MILLIS_PER_SECOND * i), None)).toList
-          e +: (expanded ++ acc)
-        } else
-          e +: acc
-      } else
-        e +: acc
+
+        val expanded = if(secs > 1) {
+          (secs - 1 to 1L by -1).map(i => Entry(prev + (MILLIS_PER_SECOND * i), None)).toList
+        } else Nil
+
+        e +: (expanded ++ acc)
+      }.getOrElse(e +: acc)
+
     } reverse match {
       case Nil =>
         val secs = secondsBetween(start, end)

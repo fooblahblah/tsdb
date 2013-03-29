@@ -102,14 +102,11 @@ class TSDBSpec extends Specification with BeforeExample {
         db.write(metric, start.plusSeconds(i), Math.random() * 100)
       }), Duration.Inf)
 
-      println(s"elapsed = ${System.currentTimeMillis() - begin}")
+      println(s"write time ${System.currentTimeMillis() - begin}")
 
       val readStart = System.currentTimeMillis()
-
       val result = Await.result(db.read(metric, start, start.plusDays(1)), Duration.Inf)
-
       println(s"read time = ${System.currentTimeMillis() - readStart}")
-
       result.length === 86400
     }
   }
