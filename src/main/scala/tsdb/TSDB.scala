@@ -60,26 +60,33 @@ class TSDB(config: Config) {
    * has 86400 entries, 1 for each second of the day. Entries are written into their respective
    * subPath by day then the second slot corresponding to the seconds of the day for the timestamp.
    */
-  def write(metric: String, timestamp: Long, value: Double) = {
+  def write(metric: String, timestamp: Long, value: Double): Future[Int] = {
     val day = new DateMidnight(timestamp).getMillis
     val id  = s"$metric:$day"
     val ts  = new DateTime(timestamp).withMillisOfSecond(0).getMillis
 
     val query = """INSERT INTO timeseries (id, time, value) VALUES (?, ?, ?);"""
 
-    keyspace
-      .prepareQuery(TS_CF)
-      .withCql(query)
-      .asPreparedStatement()
-      .withStringValue(id)
-      .withLongValue(ts)
-      .withDoubleValue(value)
-      .executeAsync()
+    Future {
+      keyspace
+        .prepareQuery(TS_CF)
+        .withCql(query)
+        .asPreparedStatement()
+        .withStringValue(id)
+        .withLongValue(ts)
+        .withDoubleValue(value)
+        .executeAsync()
+        .get().getResult().getNumber()
+    }
   }
 
 
-  def read(metric: String, start: Long, end: Long): Future[List[Entry]] = {
-    assert(start <= end)
+  def read(metric: String, _start: Long, _end: Long): Future[List[Entry]] = {
+    assert(_start <= _end)
+
+    // Normalize to seconds (chopping millis granularity)
+    val start = new DateTime(_start).withMillisOfSecond(0).getMillis
+    val end   = new DateTime(_end).withMillisOfSecond(0).getMillis
 
     @tailrec
     def dayRangeMillis(start: Long, remaining: Long, days: List[Long] = Nil): List[Long] = {
@@ -91,10 +98,8 @@ class TSDB(config: Config) {
       } else days
     }
 
-    dayRangeMillis(start, end - start).foldLeft(Future.successful(List[Entry]())) { (acc, day) =>
-      acc.flatMap(l => readDateRange(metric, day, start, end).map(l ++ _))
-    }.map { l =>
-      expandSeries(start, end, l)
+    dayRangeMillis(start, end - start).foldLeft(Future.successful(List[Entry]())) { (acc, rowTime) =>
+      acc.flatMap(l => readDateRange(metric, rowTime, start, end).map(l ++ _))
     }
   }
 
@@ -105,7 +110,7 @@ class TSDB(config: Config) {
 
 
     Future {
-      keyspace
+      val entries = keyspace
         .prepareQuery(TS_CF)
         .withCql(query)
         .asPreparedStatement()
@@ -119,42 +124,58 @@ class TSDB(config: Config) {
           val value = cols.getColumnByIndex(1).getDoubleValue()
           Entry(ts, Some(value))
         }.toList
+
+      val rowStart   = if(start > rowTime) start else rowTime
+      val rowEndTime = new DateTime(rowTime).plusHours(24).minusSeconds(1).getMillis
+      val rowEnd     = if(end > rowEndTime) rowEndTime else end
+      val expanded = expandSeries(rowStart, rowEnd, entries)
+      println(s"expanded = $expanded")
+      expanded
     }
   }
 
 
-  def expandSeries(start: Long, end: Long, entries: List[Entry]): List[Entry] = {
-    def _expander(cur: Long, l: List[Entry]) = {
-      l match {
-        // Pad head with missing entries
-        case x :: xs if x.timestamp > start =>
-          val secs = Seconds.secondsBetween(new DateTime(cur), new DateTime(x.timestamp)).getSeconds()
-          val expanded = (0 until secs).map(i => Entry(cur + (MILLIS_PER_SECOND * i), None)).toList
-          expanded ++ List(x) ++ expandSeries(cur + (MILLIS_PER_SECOND * secs), end, xs)
+  private def expandSeries(start: Long, end: Long, entries: List[Entry]): List[Entry] = {
+    println("------------")
+    println(start, end)
 
-        // Fill gaps betweem entries
-        case x :: xs =>
-          val secs = Seconds.secondsBetween(new DateTime(cur), new DateTime(x.timestamp)).getSeconds()
-          if(secs > 1) {
-            val expanded = (1 until secs).map(i => Entry(cur + (MILLIS_PER_SECOND * i), None)).toList
-            expanded ++ List(x) ++ expandSeries(x.timestamp + (MILLIS_PER_SECOND * secs), end, xs)
-          } else
-            x :: expandSeries(x.timestamp + MILLIS_PER_SECOND, end, xs)
+    entries.foldLeft(List[Entry]()) { (acc, e) =>
+      if(!acc.isEmpty) {
+        val prev = acc.head.timestamp
+        val secs = secondsBetween(prev, e.timestamp)
+        if(secs > 1) {
+          val expanded = (secs - 1 to 1L by -1).map(i => Entry(prev + (MILLIS_PER_SECOND * i), None)).toList
+          e +: (expanded ++ acc)
+        } else
+          e +: acc
+      } else
+        e +: acc
+    }.reverse match {
+      case Nil =>
+        val secs = secondsBetween(start, end)
+        (0L until secs).map(i => Entry(start + (MILLIS_PER_SECOND * i), None)).toList
 
-        // Pad the end of the list
-        case Nil if cur < end =>
-          val secs = Seconds.secondsBetween(new DateTime(cur), new DateTime(end)).getSeconds()
-          (0 until secs).map(i => Entry(cur + (MILLIS_PER_SECOND * i), None)).toList
+      case middle =>
+        val startSecs = secondsBetween(start, middle.head.timestamp)
+        val endSecs   = secondsBetween(middle.last.timestamp, end)
+        val front     = (1L to startSecs).map(i => Entry(start + (MILLIS_PER_SECOND * i), None)).toList
+        val tail      = (1L to endSecs).map(i => Entry(middle.last.timestamp + (MILLIS_PER_SECOND * i), None)).toList
 
-        case Nil => Nil
-      }
+        front ++ middle ++ tail
     }
-
-    _expander(start, entries)
   }
 
 
-  def truncateTimeseries() {
+  private def secondsBetween(start: Long, end: Long): Long = {
+    assert(start <= end)
+    (end - start) / 1000
+  }
+
+
+  private def plusSeconds(start: Long, seconds: Long): Long = start + (MILLIS_PER_SECOND * seconds)
+
+
+  private [tsdb] def truncateTimeseries() {
     keyspace
       .prepareQuery(TS_CF)
       .withCql("TRUNCATE timeseries")
