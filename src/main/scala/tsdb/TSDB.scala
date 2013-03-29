@@ -41,7 +41,7 @@ class TSDB(config: Config) {
       }
     }
 
-    client.callProcedure(callback, "Insert", metric.asInstanceOf[Object], ts.asInstanceOf[Object], value.asInstanceOf[Object])
+    client.callProcedure(callback, "Upsert", metric.asInstanceOf[Object], ts.asInstanceOf[Object], value.asInstanceOf[Object])
 
     callPromise.future
   }
