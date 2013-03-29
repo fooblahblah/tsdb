@@ -5,7 +5,8 @@
 bin
 debugoutput
 log
-project
+project/project
+project/target
 target
 timeseries.jar
 voltdbroot
