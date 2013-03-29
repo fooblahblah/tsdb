@@ -64,17 +64,17 @@ class TSDB(config: Config) {
           Nil
         } else {
           val resultTable = results(0)
-          (1 until resultTable.getRowCount()) map { i =>
-            val row = resultTable.fetchRow(i)
-            Entry(row.getLong("time"), Some(row.getDouble("value")))
+          val numRows     = resultTable.getRowCount()
+          (0 until numRows) map { i =>
+            resultTable.advanceRow()
+            Entry(resultTable.getLong("time"), Some(resultTable.getDouble("value")))
           }
         }
 
-        callPromise.success(entries.toList)
+        callPromise.success(expandSeries(start, end, entries.toList))
       }
     }
 
-    println(s"Find($metric, $start, $end)")
     client.callProcedure(callback, "Find", metric.asInstanceOf[Object], start.asInstanceOf[Object], end.asInstanceOf[Object])
 
     callPromise.future
