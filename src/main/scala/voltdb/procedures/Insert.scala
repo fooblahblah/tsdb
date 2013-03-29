@@ -20,6 +20,6 @@ class Insert extends VoltProcedure {
     else
       voltQueueSQL(updateStmt, value.asInstanceOf[Object], metric.asInstanceOf[Object], timestamp.asInstanceOf[Object])
 
-    voltExecuteSQL(true)
+    voltExecuteSQL()
   }
 }
