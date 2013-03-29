@@ -37,80 +37,80 @@ class TSDBSpec extends Specification with BeforeExample {
   }
 
   "TSDB" should {
-//    "read first 5 data points" in {
-//      val v = Math.random() * 100
-//      Await.ready(Future.sequence(List(
-//        db.write(metric, start, Math.random() * 100),
-//        db.write(metric, start.plusSeconds(1), Math.random() * 100),
-//        db.write(metric, start.plusSeconds(2), Math.random() * 100),
-//        db.write(metric, start.plusSeconds(3), Math.random() * 100),
-//        db.write(metric, start.plusSeconds(4), v)
-//      )), Duration.Inf)
-//
-//      val result = Await.result(db.read(metric, start, start.plusSeconds(4)), Duration(15, SECONDS))
-//      println(result)
-//      result.length === 5
-//      result.lastOption.flatMap(_.value) === Some(v)
-//    }
+    "read first 5 data points" in {
+      val v = Math.random() * 100
+      Await.ready(Future.sequence(List(
+        db.write(metric, start, Math.random() * 100),
+        db.write(metric, start.plusSeconds(1), Math.random() * 100),
+        db.write(metric, start.plusSeconds(2), Math.random() * 100),
+        db.write(metric, start.plusSeconds(3), Math.random() * 100),
+        db.write(metric, start.plusSeconds(4), v)
+      )), Duration.Inf)
 
-//    "read gappy data" in {
-//      val v = Math.random() * 100
-//      Await.ready(Future.sequence(List(
-//          db.write(metric, start.plusSeconds(3).getMillis, v),
-//          db.write(metric, start.plusSeconds(6).getMillis, v),
-//          db.write(metric, start.plusSeconds(10).getMillis, v)
-//      )), Duration.Inf)
-//
-//      val result = Await.result(db.read(metric, start, start.plusSeconds(10)), Duration(15, SECONDS))
+      val result = Await.result(db.read(metric, start, start.plusSeconds(4)), Duration(15, SECONDS))
 //      println(result)
-//      result.length === 11
-//      result.lastOption.flatMap(_.value) === Some(v)
-//    }
+      result.length === 5
+      result.lastOption.flatMap(_.value) === Some(v)
+    }
 
-//    "read/write day boundaries" in {
-//      val v = Math.random() * 100
-//      Await.ready(Future.sequence(List(
-//          db.write(metric, start.plusSeconds(86399).getMillis, Math.random() * 100),
-//          db.write(metric, start.plusSeconds(86400).getMillis, Math.random() * 100),
-//          db.write(metric, start.plusSeconds(86401).getMillis, v)
-//      )), Duration.Inf)
-//
-//      val result = Await.result(db.read(metric, start.plusSeconds(86399), start.plusSeconds(86401)), Duration(15, SECONDS))
+    "read gappy data" in {
+      val v = Math.random() * 100
+      Await.ready(Future.sequence(List(
+          db.write(metric, start.plusSeconds(3).getMillis, v),
+          db.write(metric, start.plusSeconds(6).getMillis, v),
+          db.write(metric, start.plusSeconds(10).getMillis, v)
+      )), Duration.Inf)
+
+      val result = Await.result(db.read(metric, start, start.plusSeconds(10)), Duration(15, SECONDS))
 //      println(result)
-//      result.length === 3
-//      result.lastOption.flatMap(_.value) === Some(v)
-//    }
+      result.length === 11
+      result.lastOption.flatMap(_.value) === Some(v)
+    }
+
+    "read/write day boundaries" in {
+      val v = Math.random() * 100
+      Await.ready(Future.sequence(List(
+          db.write(metric, start.plusSeconds(86399).getMillis, Math.random() * 100),
+          db.write(metric, start.plusSeconds(86400).getMillis, Math.random() * 100),
+          db.write(metric, start.plusSeconds(86401).getMillis, v)
+      )), Duration.Inf)
+
+      val result = Await.result(db.read(metric, start.plusSeconds(86399), start.plusSeconds(86401)), Duration(15, SECONDS))
+//      println(result)
+      result.length === 3
+      result.lastOption.flatMap(_.value) === Some(v)
+    }
 
     "read ranges outside bounds" in {
       val v = Math.random() * 100
       Await.ready(db.write(metric, start, v), Duration.Inf)
 
       val result = Await.result(db.read(metric, start.minusMinutes(1), start.plusSeconds(10)), Duration(15, SECONDS))
-      println(result)
+//      println(result)
       result.length === 71
       result.drop(60).head.value === Some(v)
     }
 
-//    "read day of data outside bounds" in {
-//      Await.result(db.read(metric, start, start.plusHours(24)), Duration(15, SECONDS)).length === 86400
-//    }
+    "read day of data outside bounds" in {
+      Await.result(db.read(metric, start, start.plusHours(24)), Duration(15, SECONDS)).length === 86400
+    }
 
-//    "read/write a day's worth of data" in {
-//      val begin = System.currentTimeMillis()
-//
-//      Await.ready(Future.sequence(0 until 86400 map { i =>
-//        db.write(metric, start.plusSeconds(i), Math.random() * 100)
-//      }), Duration.Inf)
-//
-//      println(s"elapsed = ${System.currentTimeMillis() - begin}")
-//
-//      val readStart = System.currentTimeMillis()
-//
-//      val result = Await.result(db.read(metric, start, start.plusDays(1)), Duration.Inf)
-//
-//      println(s"read time = ${System.currentTimeMillis() - readStart}")
-//
-//      result.length === 71
-//    }
+    "read/write a day's worth of data" in {
+      val begin = System.currentTimeMillis()
+
+      Await.ready(Future.sequence(0 until 86400 map { i =>
+        db.write(metric, start.plusSeconds(i), Math.random() * 100)
+      }), Duration.Inf)
+
+      println(s"elapsed = ${System.currentTimeMillis() - begin}")
+
+      val readStart = System.currentTimeMillis()
+
+      val result = Await.result(db.read(metric, start, start.plusDays(1)), Duration.Inf)
+
+      println(s"read time = ${System.currentTimeMillis() - readStart}")
+
+      result.length === 86400
+    }
   }
 }

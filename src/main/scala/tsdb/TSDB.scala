@@ -128,17 +128,12 @@ class TSDB(config: Config) {
       val rowStart   = if(start > rowTime) start else rowTime
       val rowEndTime = new DateTime(rowTime).plusHours(24).minusSeconds(1).getMillis
       val rowEnd     = if(end > rowEndTime) rowEndTime else end
-      val expanded = expandSeries(rowStart, rowEnd, entries)
-      println(s"expanded = $expanded")
-      expanded
+      expandSeries(rowStart, rowEnd, entries)
     }
   }
 
 
   private def expandSeries(start: Long, end: Long, entries: List[Entry]): List[Entry] = {
-    println("------------")
-    println(start, end)
-
     entries.foldLeft(List[Entry]()) { (acc, e) =>
       if(!acc.isEmpty) {
         val prev = acc.head.timestamp
@@ -150,10 +145,10 @@ class TSDB(config: Config) {
           e +: acc
       } else
         e +: acc
-    }.reverse match {
+    } reverse match {
       case Nil =>
         val secs = secondsBetween(start, end)
-        (0L until secs).map(i => Entry(start + (MILLIS_PER_SECOND * i), None)).toList
+        (0L to secs).map(i => Entry(start + (MILLIS_PER_SECOND * i), None)).toList
 
       case middle =>
         val startSecs = secondsBetween(start, middle.head.timestamp)
