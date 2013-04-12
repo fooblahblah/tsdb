@@ -5,9 +5,7 @@ version := "0.1.0"
 scalaVersion := "2.10.1"
 
 libraryDependencies ++= Seq(
-  "com.netflix.astyanax"     %  "astyanax-core"        % "latest.integration",
-  "com.netflix.astyanax"     %  "astyanax-thrift"      % "latest.integration",
-  "com.netflix.astyanax"     %  "astyanax-cassandra"   % "latest.integration",
+  "com.google.guava"         %  "guava"                % "14.0.1",
   "com.typesafe.akka"        %% "akka-actor"           % "2.1.2",
   "com.typesafe.akka"        %% "akka-agent"           % "2.1.2",
   "com.weiglewilczek.slf4s"  %% "slf4s"                % "1.0.7",
