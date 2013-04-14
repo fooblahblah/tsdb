@@ -11,5 +11,5 @@ CREATE PROCEDURE FROM CLASS voltdb.procedures.Delete;
 CREATE PROCEDURE FROM CLASS voltdb.procedures.Find;
 CREATE PROCEDURE FROM CLASS voltdb.procedures.Upsert;
 
-PARTITION PROCEDURE Find ON TABLE timeseries COLUMN metric;
 PARTITION PROCEDURE Upsert ON TABLE timeseries COLUMN metric;
+

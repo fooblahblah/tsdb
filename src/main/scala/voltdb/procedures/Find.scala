@@ -3,12 +3,11 @@ package voltdb.procedures
 import org.voltdb._
 
 class Find extends VoltProcedure {
-
-  val findStmt  = new SQLStmt("""SELECT time, value FROM timeseries WHERE metric = ? AND time >= ? AND time <= ?;""")
+  val findStmt = new SQLStmt(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE ? AND time >= ? AND time <= ? ORDER BY time ASC;""")
 
   def run(metric: String, start: Long, end: Long): Array[VoltTable] = {
-    // Check whether the pair exists
-    voltQueueSQL(findStmt, metric.asInstanceOf[Object], start.asInstanceOf[Object], end.asInstanceOf[Object])
+    voltQueueSQL(findStmt, metric.replaceAll("""\*""", "%").asInstanceOf[Object], start.asInstanceOf[Object], end.asInstanceOf[Object])
     voltExecuteSQL(true)
   }
 }
+

@@ -47,48 +47,67 @@ class TSDB(config: Config) {
   }
 
 
-  def read(metric: String, _start: Long, _end: Long): Future[List[Entry]] = {
+  def read(metrics: Seq[String], _start: Long, _end: Long): Future[Map[String,List[Entry]]] = {
     assert(_start <= _end)
 
-    // Normalize to seconds (chopping millis granularity)
     val start = new DateTime(_start).withMillisOfSecond(0).getMillis
     val end   = new DateTime(_end).withMillisOfSecond(0).getMillis
 
-    val callPromise = Promise[List[Entry]]()
+    val callPromise  = Promise[Map[String, List[Entry]]]()
 
-    val callback = new ProcedureCallback {
-      def clientCallback(response: ClientResponse) {
-        val results = response.getResults()
+    val stmtFutures  = metrics map { metric =>
+      val promise = Promise[Seq[Entry]]()
 
-        val entries = if (results.length == 0 || results(0).getRowCount() < 1) {
-          Nil
-        } else {
-          val resultTable = results(0)
-          val numRows     = resultTable.getRowCount()
-          (0 until numRows) map { i =>
-            resultTable.advanceRow()
-            Entry(resultTable.getLong("time"), Some(resultTable.getDouble("value")))
+      val callback = new ProcedureCallback {
+
+        def clientCallback(response: ClientResponse) {
+          val results = response.getResults()
+
+          val entries = if(results.length == 0 || results(0).getRowCount() < 1) {
+            Nil
+          } else {
+            val resultTable = results(0)
+            val numRows     = resultTable.getRowCount()
+
+            (0 until numRows) map { i =>
+              resultTable.advanceRow()
+              Entry(resultTable.getString("metric"), resultTable.getLong("time"), Some(resultTable.getDouble("value")))
+            }
           }
-        }
 
-        callPromise.success(expandSeries(start, end, entries.toList))
+          promise.success(entries)
+        }
       }
+
+      client.callProcedure(callback, "Find", metric.asInstanceOf[Object], start.asInstanceOf[Object], end.asInstanceOf[Object])
+      promise.future
     }
 
-    client.callProcedure(callback, "Find", metric.asInstanceOf[Object], start.asInstanceOf[Object], end.asInstanceOf[Object])
+    Future.sequence(stmtFutures) map { entries =>
+      val groupedEntries = entries.flatten.foldLeft(Map[String, List[Entry]]()) { (m, entry) =>
+        if(m.contains(entry.metric))
+          m.updated(entry.metric, entry :: m(entry.metric))
+        else
+          m + (entry.metric -> List(entry))
+      } map { kv =>
+        (kv._1 -> expandSeries(kv._1, start, end, kv._2.reverse))
+      }
+
+      callPromise.success(groupedEntries)
+    }
 
     callPromise.future
   }
 
 
-  private def expandSeries(start: Long, end: Long, entries: List[Entry]): List[Entry] = {
+  private def expandSeries(metric: String, start: Long, end: Long, entries: Seq[Entry]): List[Entry] = {
     entries.foldLeft(List[Entry]()) { (acc, e) =>
       acc.headOption.map { head  =>
         val prev = head.timestamp
         val secs = secondsBetween(prev, e.timestamp)
 
         val expanded = if(secs > 1) {
-          (secs - 1 to 1L by -1).map(i => Entry(prev + (MILLIS_PER_SECOND * i), None)).toList
+          (secs - 1 to 1L by -1).map(i => Entry(metric, prev + (MILLIS_PER_SECOND * i), None)).toList
         } else Nil
 
         e +: (expanded ++ acc)
@@ -97,13 +116,13 @@ class TSDB(config: Config) {
     } reverse match {
       case Nil =>
         val secs = secondsBetween(start, end)
-        (0L to secs).map(i => Entry(start + (MILLIS_PER_SECOND * i), None)).toList
+        (0L to secs).map(i => Entry(metric, start + (MILLIS_PER_SECOND * i), None)).toList
 
       case middle =>
         val startSecs = secondsBetween(start, middle.head.timestamp)
         val endSecs   = secondsBetween(middle.last.timestamp, end)
-        val front     = (1L to startSecs).map(i => Entry(start + (MILLIS_PER_SECOND * i), None)).toList
-        val tail      = (1L to endSecs).map(i => Entry(middle.last.timestamp + (MILLIS_PER_SECOND * i), None)).toList
+        val front     = (1L to startSecs).map(i => Entry(metric, start + (MILLIS_PER_SECOND * i), None)).toList
+        val tail      = (1L to endSecs).map(i => Entry(metric, middle.last.timestamp + (MILLIS_PER_SECOND * i), None)).toList
 
         front ++ middle ++ tail
     }
@@ -135,7 +154,7 @@ object TSDB {
 }
 
 
-case class Entry(timestamp: Long, value: Option[Double])
+case class Entry(metric: String, timestamp: Long, value: Option[Double])
 
 
 object Implicits {
