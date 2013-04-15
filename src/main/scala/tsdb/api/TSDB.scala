@@ -1,4 +1,4 @@
-package tsdb
+package tsdb.api
 
 import com.typesafe.config.Config
 import org.joda.time._

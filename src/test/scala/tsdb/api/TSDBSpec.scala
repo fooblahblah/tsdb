@@ -1,4 +1,4 @@
-package tsdb
+package tsdb.api
 
 import Implicits._
 import java.io.File
@@ -8,13 +8,15 @@ import org.junit.runner._
 import org.specs2.mutable.Specification
 import org.specs2.runner._
 import org.specs2.time.Duration
-import scala.concurrent.ExecutionContext.Implicits.global
 import java.util.concurrent.TimeUnit._
 import org.joda.time.DateMidnight
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
 import scala.concurrent._
 import scala.concurrent.duration.Duration
+import scala.concurrent.ExecutionContext.Implicits.global
+import tsdb.api.Implicits._
+
 import org.specs2.specification.BeforeExample
 
 

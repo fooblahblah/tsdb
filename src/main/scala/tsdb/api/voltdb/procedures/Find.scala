@@ -1,4 +1,4 @@
-package voltdb.procedures
+package tsdb.api.voltdb.procedures
 
 import org.voltdb._
 
