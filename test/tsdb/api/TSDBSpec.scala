@@ -24,13 +24,7 @@ import org.specs2.specification.BeforeExample
 class TSDBSpec extends Specification with BeforeExample {
   sequential
 
-  val config = ConfigFactory.parseString("""
-      server.host="localhost"
-      server.port=9160
-      server.seeds="localhost:9160"
-   """)
-
-  val db     = new TSDB(config)
+  val db     = new TSDB("localhost")
   val metric = "stats_counts.site.web_traffic.impression"
   val start  = new DateTime(new DateMidnight())
 

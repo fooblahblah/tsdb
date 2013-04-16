@@ -13,14 +13,10 @@ import Scalaz._
 import scala.concurrent.Promise
 import scala.util.Try
 
-class TSDB(config: Config) {
+class TSDB(host: String) {
   type StageEntry = (Long, Double)
 
   import TSDB._
-
-  private val host  = config.getString("server.host")
-  private val port  = config.getInt("server.port")
-  private val seeds = config.getString("server.seeds")
 
   private val client = ClientFactory.createClient()
   client.createConnection(host)
@@ -150,7 +146,7 @@ object TSDB {
   val MILLIS_PER_DAY    = SECONDS_PER_DAY * 1000
   val SECONDS_PER_DAY   = 86400
 
-  def apply(config: Config) = new TSDB(config)
+  def apply(host: String) = new TSDB(host: String)
 }
 
 

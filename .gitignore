@@ -1,10 +1,13 @@
 .cache
 .classpath
 .project
+.settings
+.target
 .worksheet
 bin
 debugoutput
 log
+logs
 project/project
 project/target
 target

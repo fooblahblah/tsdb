@@ -1,0 +1,2 @@
+GET     /metrics/query   tsdb.controller.MetricsController.query(target: List[String])
+POST    /metrics         tsdb.controller.MetricsController.store
