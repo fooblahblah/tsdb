@@ -24,14 +24,12 @@ class TSDB {
   val WRITE_COMMITTED = 5
   val READ_COMMITTED  = 2
 
-  val isolation = WRITE_COMMITTED
-
   def write(metric: String, timestamp: Long, value: Double): Future[Unit] = {
     val ts  = new DateTime(timestamp).withMillisOfSecond(0).getMillis
 
     Future {
       DBUtils.withTransaction("default") { implicit conn =>
-        conn.setTransactionIsolation(isolation)
+        conn.setTransactionIsolation(WRITE_COMMITTED)
 
         Try {
           SQL(s"""INSERT INTO timeseries values('$metric', $ts, $value)""").executeUpdate()
@@ -57,14 +55,20 @@ class TSDB {
     val stmtFutures = metrics map { _metric =>
       Future {
         val metric = _metric.replaceAll("""\*""", "%")
-        val query  = SQL(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE '$metric' AND time >= $start AND time <= $end ORDER BY time ASC;""")
+        val query  = SQL(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE '$metric' AND time >= $start AND time <= $end ORDER BY time ASC""")
 
-        DB.withConnection { implicit conn =>
-          conn.setTransactionIsolation(isolation)
-          query().map { row =>
+        val startTime = System.currentTimeMillis()
+
+        val entries = DBUtils.withConnection("default") { implicit conn =>
+          conn.setTransactionIsolation(READ_COMMITTED)
+
+          query() map { row =>
             Entry(row[String]("metric"), row[Long]("time"), Some(row[Double]("value")))
-          }.toList
+          }
         }
+
+        println(s"query elapsed: ${System.currentTimeMillis() - startTime}")
+        entries
       }
     }
 
@@ -77,6 +81,8 @@ class TSDB {
       } map { kv =>
         (kv._1 -> expandSeries(kv._1, start, end, kv._2.reverse))
       }
+
+//      val groupedEntries = Map[String, List[Entry]]()
 
       callPromise.success(groupedEntries)
     }
