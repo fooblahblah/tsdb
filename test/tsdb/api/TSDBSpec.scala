@@ -34,7 +34,7 @@ class TSDBSpec extends Specification with AroundExample {
   def application = FakeApplication(additionalConfiguration = Map(
     "ehcacheplugin"      -> "disabled",
     "logger.application" -> "ERROR",
-    "db.default.url"     -> "jdbc:com.nuodb://localhost/test?schema=hockey"))
+    "db.default.url"     -> "jdbc:com.nuodb://localhost/tsdb?schema=test"))
 
   val db     = TSDB()
   val metric = "stats_counts.site.web_traffic.impression"
