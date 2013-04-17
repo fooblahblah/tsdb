@@ -1,9 +1,10 @@
 package tsdb.api
 
+import anorm._
 import com.typesafe.config.Config
 import org.joda.time._
-import org.voltdb._
-import org.voltdb.client._
+import play.api.Play.current
+import play.api.db.DB
 import scala.collection.JavaConversions._
 import scala.annotation.tailrec
 import scala.concurrent.Future
@@ -11,35 +12,37 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scalaz._
 import Scalaz._
 import scala.concurrent.Promise
-import scala.util.Try
+import scala.util.{Try, Success, Failure}
+import java.util.Properties
+import com.nuodb.jdbc.DataSource
+import tsdb.util.DBUtils
 
-class TSDB(host: String) {
-  type StageEntry = (Long, Double)
-
+class TSDB {
   import TSDB._
 
-  private val client = ClientFactory.createClient()
-  client.createConnection(host)
+  val CONSISTENT_READ = 7
+  val WRITE_COMMITTED = 5
+  val READ_COMMITTED  = 2
 
-  /**
-   * Write a value to the path based on the day calculated from the timestamp. Each day node
-   * has 86400 entries, 1 for each second of the day. Entries are written into their respective
-   * subPath by day then the second slot corresponding to the seconds of the day for the timestamp.
-   */
+  val isolation = WRITE_COMMITTED
+
   def write(metric: String, timestamp: Long, value: Double): Future[Unit] = {
     val ts  = new DateTime(timestamp).withMillisOfSecond(0).getMillis
 
-    val callPromise = Promise[Unit]()
+    Future {
+      DBUtils.withTransaction("default") { implicit conn =>
+        conn.setTransactionIsolation(isolation)
 
-    val callback = new ProcedureCallback {
-      def clientCallback(response: ClientResponse) {
-        callPromise.success()
+        Try {
+          SQL(s"""INSERT INTO timeseries values('$metric', $ts, $value)""").executeUpdate()
+        } match {
+          case Success(i) =>
+          case Failure(e) =>
+            SQL(s"""SELECT value FROM timeseries WHERE metric = '$metric' AND time = $ts FOR UPDATE""").executeUpdate()
+            SQL(s"""UPDATE timeseries SET value = value + $value WHERE metric = '$metric' AND time = $ts""").executeUpdate()
+        }
       }
     }
-
-    client.callProcedure(callback, "Upsert", metric.asInstanceOf[Object], ts.asInstanceOf[Object], value.asInstanceOf[Object])
-
-    callPromise.future
   }
 
 
@@ -49,33 +52,25 @@ class TSDB(host: String) {
     val start = new DateTime(_start).withMillisOfSecond(0).getMillis
     val end   = new DateTime(_end).withMillisOfSecond(0).getMillis
 
-    val callPromise  = Promise[Map[String, List[Entry]]]()
+    val callPromise = Promise[Map[String, List[Entry]]]()
 
-    val stmtFutures  = metrics map { metric =>
+    val stmtFutures = metrics map { _metric =>
       val promise = Promise[Seq[Entry]]()
 
-      val callback = new ProcedureCallback {
+      Future {
+        val metric = _metric.replaceAll("""\*""", "%")
+        val query  = SQL(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE '$metric' AND time >= $start AND time <= $end ORDER BY time ASC;""")
 
-        def clientCallback(response: ClientResponse) {
-          val results = response.getResults()
-
-          val entries = if(results.length == 0 || results(0).getRowCount() < 1) {
-            Nil
-          } else {
-            val resultTable = results(0)
-            val numRows     = resultTable.getRowCount()
-
-            (0 until numRows) map { i =>
-              resultTable.advanceRow()
-              Entry(resultTable.getString("metric"), resultTable.getLong("time"), Some(resultTable.getDouble("value")))
-            }
-          }
-
-          promise.success(entries)
+        val entries = DB.withConnection { implicit conn =>
+          conn.setTransactionIsolation(isolation)
+          query().map { row =>
+            Entry(row[String]("metric"), row[Long]("time"), Some(row[Double]("value")))
+          }.toList
         }
+
+        promise.success(entries)
       }
 
-      client.callProcedure(callback, "Find", metric.asInstanceOf[Object], start.asInstanceOf[Object], end.asInstanceOf[Object])
       promise.future
     }
 
@@ -134,8 +129,10 @@ class TSDB(host: String) {
   private def plusSeconds(start: Long, seconds: Long): Long = start + (MILLIS_PER_SECOND * seconds)
 
 
-  private [tsdb] def truncateTimeseries() {
-    client.callProcedure("Delete")
+  private [api] def truncateTimeseries() {
+    DB.withConnection { implicit conn =>
+      SQL("DELETE FROM timeseries").executeUpdate()
+    }
   }
 }
 
@@ -146,7 +143,7 @@ object TSDB {
   val MILLIS_PER_DAY    = SECONDS_PER_DAY * 1000
   val SECONDS_PER_DAY   = 86400
 
-  def apply(host: String) = new TSDB(host: String)
+  def apply() = new TSDB
 }
 
 

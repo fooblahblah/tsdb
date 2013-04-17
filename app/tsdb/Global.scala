@@ -9,7 +9,5 @@ object Global extends GlobalSettings {
 
   lazy val config = Play.configuration
 
-  lazy val tsdbHost = config.getString("tsdb.server.host").getOrElse("localhost")
-
-  lazy val tsdb = TSDB(tsdbHost)
+  lazy val tsdb = TSDB()
 }
