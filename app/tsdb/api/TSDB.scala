@@ -12,22 +12,46 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scalaz._
 import Scalaz._
 import scala.concurrent.Promise
-import scala.util.Try
+import scala.util.{Try, Success, Failure}
+import java.util.Properties
+import com.nuodb.jdbc.DataSource
 
 class TSDB {
   import TSDB._
 
-  /**
-   * Write a value to the path based on the day calculated from the timestamp. Each day node
-   * has 86400 entries, 1 for each second of the day. Entries are written into their respective
-   * subPath by day then the second slot corresponding to the seconds of the day for the timestamp.
-   */
-  def write(metric: String, timestamp: Long, value: Double): Future[Int] = {
+  val CONSISTENT_READ = 7
+  val WRITE_COMMITTED = 5
+  val READ_COMMITTED  = 2
+
+  val isolation = WRITE_COMMITTED
+
+  def write(metric: String, timestamp: Long, value: Double): Future[Unit] = {
     val ts  = new DateTime(timestamp).withMillisOfSecond(0).getMillis
 
     Future {
-      DB.withConnection { implicit conn =>
-        SQL(s"""REPLACE timeseries VALUES ('$metric', $ts, COALESCE(SELECT value + $value FROM timeseries WHERE metric = '$metric' AND time = $ts, $value))""").executeUpdate()
+
+      implicit val conn = DB.getDataSource("default").getConnection()
+
+      Try {
+        conn.setTransactionIsolation(isolation)
+
+        Try {
+          SQL(s"""INSERT INTO timeseries values('$metric', $ts, $value)""").executeUpdate()
+        } match {
+          case Success(i) =>
+          case Failure(e) =>
+            SQL(s"""SELECT value FROM timeseries WHERE metric = '$metric' AND time = $ts FOR UPDATE""").executeUpdate()
+            SQL(s"""UPDATE timeseries SET value = value + $value WHERE metric = '$metric' AND time = $ts""").executeUpdate()
+        }
+      } match {
+        case Success(i) =>
+          conn.commit()
+          conn.close()
+
+        case Failure(e) =>
+          e.printStackTrace()
+          conn.rollback()
+          conn.close()
       }
     }
   }
@@ -49,6 +73,7 @@ class TSDB {
         val query  = SQL(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE '$metric' AND time >= $start AND time <= $end ORDER BY time ASC;""")
 
         val entries = DB.withConnection { implicit conn =>
+          conn.setTransactionIsolation(isolation)
           query().map { row =>
             Entry(row[String]("metric"), row[Long]("time"), Some(row[Double]("value")))
           }.toList

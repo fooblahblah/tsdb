@@ -153,19 +153,19 @@ class TSDBSpec extends Specification with AroundExample {
       result("stats.conversions").headOption.flatMap(_.value) === Some(v2)
     }
 
-    "read/write a day's worth of data" in {
-      val begin = System.currentTimeMillis()
-
-      Await.ready(Future.sequence(0 until 86400 map { i =>
-        db.write(metric, start.plusSeconds(i), Math.random() * 100)
-      }), Duration.Inf)
-
-      println(s"write time ${System.currentTimeMillis() - begin}")
-
-      val readStart = System.currentTimeMillis()
-      val result = Await.result(db.read(Seq(metric), start, start.plusDays(1).minusSeconds(1)), Duration.Inf)
-      println(s"read time = ${System.currentTimeMillis() - readStart}")
-      result(metric).length === 86400
-    }
+//    "read/write a day's worth of data" in {
+//      val begin = System.currentTimeMillis()
+//
+//      Await.ready(Future.sequence(0 until 86400 map { i =>
+//        db.write(metric, start.plusSeconds(i), Math.random() * 100)
+//      }), Duration.Inf)
+//
+//      println(s"write time ${System.currentTimeMillis() - begin}")
+//
+//      val readStart = System.currentTimeMillis()
+//      val result = Await.result(db.read(Seq(metric), start, start.plusDays(1).minusSeconds(1)), Duration.Inf)
+//      println(s"read time = ${System.currentTimeMillis() - readStart}")
+//      result(metric).length === 86400
+//    }
   }
 }

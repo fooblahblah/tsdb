@@ -5,11 +5,8 @@
 .target
 .worksheet
 bin
-debugoutput
-log
 logs
 project/project
 project/target
 target
-timeseries.jar
-voltdbroot
+RUNNING_PID
