@@ -1,10 +1,11 @@
 package tsdb.api
 
+import anorm._
 import Implicits._
 import java.io.File
 import java.util.Date
 import org.joda.time.DateTime
-import org.junit.runner._
+import org.junit.runner.RunWith
 import org.specs2.mutable.Specification
 import org.specs2.runner._
 import org.specs2.time.Duration
@@ -16,20 +17,34 @@ import scala.concurrent._
 import scala.concurrent.duration.Duration
 import scala.concurrent.ExecutionContext.Implicits.global
 import tsdb.api.Implicits._
-
 import org.specs2.specification.BeforeExample
+import play.api.Play.current
+import play.api.test._
+import play.api.test.Helpers._
+import play.api.db.DB
+import org.specs2.execute.AsResult
+import org.specs2.execute.Result
+import org.specs2.specification.AroundExample
 
 
 @RunWith(classOf[JUnitRunner])
-class TSDBSpec extends Specification with BeforeExample {
+class TSDBSpec extends Specification with AroundExample {
   sequential
 
-  val db     = new TSDB("localhost")
+  def application = FakeApplication(additionalConfiguration = Map(
+    "ehcacheplugin"      -> "disabled",
+    "logger.application" -> "ERROR",
+    "db.default.url"     -> "jdbc:com.nuodb://localhost/test?schema=hockey"))
+
+  val db     = TSDB()
   val metric = "stats_counts.site.web_traffic.impression"
   val start  = new DateTime(new DateMidnight())
 
-  def before {
-    db.truncateTimeseries()
+  def around[R : AsResult](r: => R): Result = {
+    running(application) {
+      db.truncateTimeseries()
+      AsResult(r)
+    }
   }
 
   "TSDB" should {

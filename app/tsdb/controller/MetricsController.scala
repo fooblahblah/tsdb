@@ -10,6 +10,8 @@ import tsdb.Global
 import tsdb.api.TSDB
 import tsdb.model.Metric
 import tsdb.model.ModelImplcits._
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
 
 trait MetricsController extends Controller {
 
@@ -18,8 +20,11 @@ trait MetricsController extends Controller {
 
   def store = Action(parse.tolerantJson) { implicit request =>
     val metric = request.body.as[Metric]
-    tsdb.write(metric.name, metric.timestamp.getOrElse(System.currentTimeMillis), metric.value)
-    Ok
+    Async {
+      tsdb.write(metric.name, metric.timestamp.getOrElse(System.currentTimeMillis), metric.value) map { _ =>
+        Ok
+      }
+    }
   }
 
 
