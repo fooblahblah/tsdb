@@ -55,23 +55,17 @@ class TSDB {
     val callPromise = Promise[Map[String, List[Entry]]]()
 
     val stmtFutures = metrics map { _metric =>
-      val promise = Promise[Seq[Entry]]()
-
       Future {
         val metric = _metric.replaceAll("""\*""", "%")
         val query  = SQL(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE '$metric' AND time >= $start AND time <= $end ORDER BY time ASC;""")
 
-        val entries = DB.withConnection { implicit conn =>
+        DB.withConnection { implicit conn =>
           conn.setTransactionIsolation(isolation)
           query().map { row =>
             Entry(row[String]("metric"), row[Long]("time"), Some(row[Double]("value")))
           }.toList
         }
-
-        promise.success(entries)
       }
-
-      promise.future
     }
 
     Future.sequence(stmtFutures) map { entries =>
@@ -101,7 +95,7 @@ class TSDB {
           (secs - 1 to 1L by -1).map(i => Entry(metric, prev + (MILLIS_PER_SECOND * i), None)).toList
         } else Nil
 
-        e +: (expanded ++ acc)
+        e :: (expanded ++ acc)
       }.getOrElse(e +: acc)
 
     } reverse match {
