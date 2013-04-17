@@ -6,6 +6,9 @@ import play.api.db.DB
 import scala.util.{Try, Success, Failure }
 
 object DBUtils {
+
+  def withConnection[A](block: Connection => A): A = withConnection("default")(block)
+
   def withConnection[A](name: String)(block: Connection => A): A = {
     val connection = DB.getDataSource(name).getConnection()
 
@@ -23,7 +26,9 @@ object DBUtils {
     }
   }
 
-  def withTransaction[A](name: String)(block: Connection => A): A = {
+  def withTransaction[A](block: Connection => A): A = withConnection("default")(block)
+
+  def withTransaction[A](name: String )(block: Connection => A): A = {
     val connection = DB.getDataSource(name).getConnection()
 
     Try {
