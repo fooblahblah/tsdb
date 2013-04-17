@@ -15,6 +15,7 @@ import scala.concurrent.Promise
 import scala.util.{Try, Success, Failure}
 import java.util.Properties
 import com.nuodb.jdbc.DataSource
+import tsdb.util.DBUtils
 
 class TSDB {
   import TSDB._
@@ -29,10 +30,7 @@ class TSDB {
     val ts  = new DateTime(timestamp).withMillisOfSecond(0).getMillis
 
     Future {
-
-      implicit val conn = DB.getDataSource("default").getConnection()
-
-      Try {
+      DBUtils.withTransaction("default") { implicit conn =>
         conn.setTransactionIsolation(isolation)
 
         Try {
@@ -43,15 +41,6 @@ class TSDB {
             SQL(s"""SELECT value FROM timeseries WHERE metric = '$metric' AND time = $ts FOR UPDATE""").executeUpdate()
             SQL(s"""UPDATE timeseries SET value = value + $value WHERE metric = '$metric' AND time = $ts""").executeUpdate()
         }
-      } match {
-        case Success(i) =>
-          conn.commit()
-          conn.close()
-
-        case Failure(e) =>
-          e.printStackTrace()
-          conn.rollback()
-          conn.close()
       }
     }
   }
