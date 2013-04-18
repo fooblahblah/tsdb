@@ -24,6 +24,7 @@ class TSDB {
   val WRITE_COMMITTED = 5
   val READ_COMMITTED  = 2
 
+
   def write(metric: String, timestamp: Long, value: Double): Future[Unit] = {
     val ts  = new DateTime(timestamp).withMillisOfSecond(0).getMillis
 
@@ -44,71 +45,62 @@ class TSDB {
   }
 
 
-  def read(metrics: Seq[String], _start: Long, _end: Long): Future[Map[String,List[Entry]]] = {
+  def read(metrics: Seq[String], _start: Long, _end: Long): Future[Seq[(String, Seq[DataPoint])]] = {
     assert(_start <= _end)
 
     val start = new DateTime(_start).withMillisOfSecond(0).getMillis
     val end   = new DateTime(_end).withMillisOfSecond(0).getMillis
 
-    val callPromise = Promise[Map[String, List[Entry]]]()
+    val callPromise = Promise[Seq[(String, Seq[DataPoint])]]()
 
     val stmtFutures = metrics map { _metric =>
       Future {
         val metric = _metric.replaceAll("""\*""", "%")
         val query  = SQL(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE '$metric' AND time >= $start AND time <= $end ORDER BY time ASC""")
 
-        val entries = DBUtils.withConnection("default") { implicit conn =>
+        DBUtils.withConnection("default") { implicit conn =>
           conn.setTransactionIsolation(READ_COMMITTED)
 
           query() map { row =>
             Entry(row[String]("metric"), row[Long]("time"), Some(row[Double]("value")))
+          } groupBy(_.metric) map { kv =>
+            (kv._1 -> expandSeries(start, end, kv._2))
           }
         }
-
-        entries
       }
     }
 
     Future.sequence(stmtFutures) map { entries =>
-      val groupedEntries = entries.flatten.foldLeft(Map[String, List[Entry]]()) { (m, entry) =>
-        if(m.contains(entry.metric))
-          m.updated(entry.metric, entry :: m(entry.metric))
-        else
-          m + (entry.metric -> List(entry))
-      } map { kv =>
-        (kv._1 -> expandSeries(kv._1, start, end, kv._2.reverse))
-      }
-
-      callPromise.success(groupedEntries)
+      callPromise.success(entries.flatten.sortBy(_._1))
     }
 
     callPromise.future
   }
 
 
-  private def expandSeries(metric: String, start: Long, end: Long, entries: Seq[Entry]): List[Entry] = {
-    entries.foldLeft(List[Entry]()) { (acc, e) =>
-      acc.headOption.map { head  =>
+  private def expandSeries(start: Long, end: Long, entries: Seq[Entry]): Seq[DataPoint] = {
+    entries.foldLeft(List[DataPoint]()) { (acc, e) =>
+      acc.headOption map { head =>
         val prev = head.timestamp
         val secs = secondsBetween(prev, e.timestamp)
 
         val expanded = if(secs > 1) {
-          (secs - 1 to 1L by -1).map(i => Entry(metric, prev + (MILLIS_PER_SECOND * i), None)).toList
+          (secs - 1 to 1L by -1).map(i => DataPoint(prev + (MILLIS_PER_SECOND * i), None)).toList
         } else Nil
 
-        e :: (expanded ++ acc)
-      }.getOrElse(e +: acc)
+        DataPoint(e.timestamp, e.value) :: (expanded ++ acc)
+      } getOrElse(DataPoint(e.timestamp, e.value) +: acc)
 
     } reverse match {
       case Nil =>
         val secs = secondsBetween(start, end)
-        (0L to secs).map(i => Entry(metric, start + (MILLIS_PER_SECOND * i), None)).toList
+        (0L to secs).map(i => DataPoint(start + (MILLIS_PER_SECOND * i), None)).toList
 
       case middle =>
         val startSecs = secondsBetween(start, middle.head.timestamp)
         val endSecs   = secondsBetween(middle.last.timestamp, end)
-        val front     = (1L to startSecs).map(i => Entry(metric, start + (MILLIS_PER_SECOND * i), None)).toList
-        val tail      = (1L to endSecs).map(i => Entry(metric, middle.last.timestamp + (MILLIS_PER_SECOND * i), None)).toList
+        val front     = (1L to startSecs).map(i => DataPoint(start + (MILLIS_PER_SECOND * i), None)).toList
+        val tail      = (1L to endSecs).map(i => DataPoint(middle.last.timestamp + (MILLIS_PER_SECOND * i), None)).toList
 
         front ++ middle ++ tail
     }
@@ -143,6 +135,7 @@ object TSDB {
 
 
 case class Entry(metric: String, timestamp: Long, value: Option[Double])
+case class DataPoint(timestamp: Long, value: Option[Double])
 
 
 object Implicits {
