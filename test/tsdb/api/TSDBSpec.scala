@@ -47,14 +47,16 @@ class TSDBSpec extends Specification with AroundExample {
     }
   }
 
+  def randomValue = Math.round(Math.random() * 100)
+
   "TSDB" should {
     "read first 5 data points" in {
-      val v = Math.random() * 100
+      val v = randomValue
       Await.ready(Future.sequence(List(
-        db.write(metric, start, Math.random() * 100),
-        db.write(metric, start.plusSeconds(1), Math.random() * 100),
-        db.write(metric, start.plusSeconds(2), Math.random() * 100),
-        db.write(metric, start.plusSeconds(3), Math.random() * 100),
+        db.write(metric, start, randomValue),
+        db.write(metric, start.plusSeconds(1), randomValue),
+        db.write(metric, start.plusSeconds(2), randomValue),
+        db.write(metric, start.plusSeconds(3), randomValue),
         db.write(metric, start.plusSeconds(4), v)
       )), Duration.Inf)
 
@@ -66,7 +68,7 @@ class TSDBSpec extends Specification with AroundExample {
     }
 
     "read gappy data" in {
-      val v = Math.random() * 100
+      val v = randomValue
       Await.ready(Future.sequence(List(
         db.write(metric, start.plusSeconds(3).getMillis, v),
         db.write(metric, start.plusSeconds(6).getMillis, v),
@@ -81,10 +83,10 @@ class TSDBSpec extends Specification with AroundExample {
     }
 
     "read/write day boundaries" in {
-      val v = Math.random() * 100
+      val v = randomValue
       Await.ready(Future.sequence(List(
-          db.write(metric, start.plusSeconds(86399).getMillis, Math.random() * 100),
-          db.write(metric, start.plusSeconds(86400).getMillis, Math.random() * 100),
+          db.write(metric, start.plusSeconds(86399).getMillis, randomValue),
+          db.write(metric, start.plusSeconds(86400).getMillis, randomValue),
           db.write(metric, start.plusSeconds(86401).getMillis, v)
       )), Duration.Inf)
 
@@ -96,7 +98,7 @@ class TSDBSpec extends Specification with AroundExample {
     }
 
     "read ranges outside bounds" in {
-      val v = Math.random() * 100
+      val v = randomValue
       Await.ready(db.write(metric, start, v), Duration.Inf)
 
       val result = Await.result(db.read(Seq(metric), start.minusMinutes(1), start.plusSeconds(10)), Duration(15, SECONDS))
@@ -112,15 +114,15 @@ class TSDBSpec extends Specification with AroundExample {
     }
 
     "read/write multiple metrics" in {
-      val v1 = Math.random() * 100
-      val v2 = Math.random() * 100
+      val v1 = randomValue
+      val v2 = randomValue
 
       Await.ready(Future.sequence(List(
         db.write("impressions", start, v1),
-        db.write("impressions", start.plusSeconds(1), Math.random() * 100),
-        db.write("impressions", start.plusSeconds(2), Math.random() * 100),
+        db.write("impressions", start.plusSeconds(1), randomValue),
+        db.write("impressions", start.plusSeconds(2), randomValue),
         db.write("conversions", start, v2),
-        db.write("conversions", start.plusSeconds(1), Math.random() * 100)
+        db.write("conversions", start.plusSeconds(1), randomValue)
       )), Duration.Inf)
 
       val result = Await.result(db.read(List("impressions", "conversions"), start, start.plusSeconds(4)), Duration(15, SECONDS))
@@ -133,15 +135,15 @@ class TSDBSpec extends Specification with AroundExample {
     }
 
     "read wildcards" in {
-      val v1 = Math.random() * 100
-      val v2 = Math.random() * 100
+      val v1 = randomValue
+      val v2 = randomValue
 
       Await.ready(Future.sequence(List(
         db.write("stats.impressions", start, v1),
-        db.write("stats.impressions", start.plusSeconds(1), Math.random() * 100),
-        db.write("stats.impressions", start.plusSeconds(2), Math.random() * 100),
+        db.write("stats.impressions", start.plusSeconds(1), randomValue),
+        db.write("stats.impressions", start.plusSeconds(2), randomValue),
         db.write("stats.conversions", start, v2),
-        db.write("stats.conversions", start.plusSeconds(1), Math.random() * 100)
+        db.write("stats.conversions", start.plusSeconds(1), randomValue)
       )), Duration.Inf)
 
       val result = Await.result(db.read(List("stats.*"), start, start.plusSeconds(4)), Duration(15, SECONDS))
@@ -157,7 +159,7 @@ class TSDBSpec extends Specification with AroundExample {
       val begin = System.currentTimeMillis()
 
       Await.ready(Future.sequence(0 until 86400 map { i =>
-        db.write(metric, start.plusSeconds(i), Math.random() * 100)
+        db.write(metric, start.plusSeconds(i), randomValue)
       }), Duration.Inf)
 
       println(s"write time ${System.currentTimeMillis() - begin}")

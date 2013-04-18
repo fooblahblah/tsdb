@@ -57,8 +57,6 @@ class TSDB {
         val metric = _metric.replaceAll("""\*""", "%")
         val query  = SQL(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE '$metric' AND time >= $start AND time <= $end ORDER BY time ASC""")
 
-        val startTime = System.currentTimeMillis()
-
         val entries = DBUtils.withConnection("default") { implicit conn =>
           conn.setTransactionIsolation(READ_COMMITTED)
 
@@ -67,7 +65,6 @@ class TSDB {
           }
         }
 
-        println(s"query elapsed: ${System.currentTimeMillis() - startTime}")
         entries
       }
     }
@@ -81,8 +78,6 @@ class TSDB {
       } map { kv =>
         (kv._1 -> expandSeries(kv._1, start, end, kv._2.reverse))
       }
-
-//      val groupedEntries = Map[String, List[Entry]]()
 
       callPromise.success(groupedEntries)
     }
