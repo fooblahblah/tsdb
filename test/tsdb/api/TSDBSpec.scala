@@ -47,7 +47,7 @@ class TSDBSpec extends Specification with AroundExample {
     }
   }
 
-  def randomValue = Math.round(Math.random() * 100)
+  def randomValue = (Math.floor (Math.random() * 100 * 100)) / 100
 
   "TSDB" should {
     "read first 5 data points" in {
