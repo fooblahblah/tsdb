@@ -1,6 +1,7 @@
 package tsdb.api
 
 import anorm._
+import anorm.SqlParser._
 import com.typesafe.config.Config
 import org.joda.time._
 import play.api.Play.current
@@ -9,13 +10,12 @@ import scala.collection.JavaConversions._
 import scala.annotation.tailrec
 import scala.concurrent.Future
 import scala.concurrent.ExecutionContext.Implicits.global
-import scalaz._
-import Scalaz._
 import scala.concurrent.Promise
 import scala.util.{Try, Success, Failure}
 import java.util.Properties
 import com.nuodb.jdbc.DataSource
 import tsdb.util.DBUtils
+import scala.collection.mutable.ArrayBuffer
 
 class TSDB {
   import TSDB._
@@ -29,7 +29,7 @@ class TSDB {
     val ts  = new DateTime(timestamp).withMillisOfSecond(0).getMillis
 
     Future {
-      DBUtils.withTransaction("default") { implicit conn =>
+      DBUtils.withTransaction { implicit conn =>
         conn.setTransactionIsolation(WRITE_COMMITTED)
 
         Try {
@@ -37,7 +37,6 @@ class TSDB {
         } match {
           case Success(i) =>
           case Failure(e) =>
-            SQL(s"""SELECT value FROM timeseries WHERE metric = '$metric' AND time = $ts FOR UPDATE""").executeUpdate()
             SQL(s"""UPDATE timeseries SET value = value + $value WHERE metric = '$metric' AND time = $ts""").executeUpdate()
         }
       }
@@ -55,15 +54,21 @@ class TSDB {
 
     val stmtFutures = metrics map { _metric =>
       Future {
-        val metric = _metric.replaceAll("""\*""", "%")
-        val query  = SQL(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE '$metric' AND time >= $start AND time <= $end ORDER BY time ASC""")
+        val metricClause = _metric.replaceAll("""\*""", "%")
+        val query        = SQL(s"""SELECT metric, time, value FROM timeseries WHERE metric LIKE '$metricClause' AND time >= $start AND time <= $end ORDER BY time ASC""")
 
-        DBUtils.withConnection("default") { implicit conn =>
+        DBUtils.withConnection { implicit conn =>
           conn.setTransactionIsolation(READ_COMMITTED)
 
-          query() map { row =>
-            Entry(row[String]("metric"), row[Long]("time"), Some(row[Double]("value")))
-          } groupBy(_.metric) map { kv =>
+          val entries = new ArrayBuffer[Entry]()
+          val rs      = query.resultSet
+
+          // Using an Anorm stream is 2x slower
+          while(rs.next()) {
+            entries += Entry(rs.getString("metric"), rs.getLong("time"), Some(rs.getDouble("value")))
+          }
+
+          entries groupBy(_.metric) map { kv =>
             (kv._1 -> expandSeries(start, end, kv._2))
           }
         }
